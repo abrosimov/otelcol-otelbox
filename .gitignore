@@ -1,0 +1,5 @@
+# OCB build output (dist.output_path in builder.yaml).
+/_build/
+
+# Locally built binaries, named as CI names the release assets.
+/otelcol-otelbox_*
