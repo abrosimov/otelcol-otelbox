@@ -5,41 +5,18 @@
 #                   --config config/examples/gateway.yaml \
 #                   --config test/config/gateway-coupling-ci.yaml
 #
-# ┌───────────────────────────────────────────────────────────────────────────┐
-# │ CI ONLY. NEVER COPY ANY PART OF THIS FILE INTO A DEPLOYMENT.              │
-# └───────────────────────────────────────────────────────────────────────────┘
+# CI ONLY, never copied into a deployment. A second gateway overlay because
+# gateway-ci.yaml's `file` sink cannot be stopped and its queue cannot fill:
+# this one keeps both real exporters, `block_on_overflow`, both WALs and the
+# deployed fan-out, and points them at two processes the test can kill.
 #
-# WHY A SECOND GATEWAY OVERLAY. gateway-ci.yaml replaces both backends with a
-# `file` sink, which is right for the delivery assertions and wrong here: this
-# scenario turns one backend off and needs its queue to fill. So this overlay
-# keeps both real OTLP exporters — and with them `block_on_overflow: true`, the
-# per-backend WALs and the fan-out shape of every pipeline — and points them at
-# two collector processes the test starts and stops at will.
+# Only queue sizes, `batch.timeout` and the ports move, and none of them is what
+# is asserted: the claim is that a *full* queue couples the backends, not how
+# long 9 GiB takes to fill at 5s a batch.
 #
-# WHAT IT PROVES, AND WHY THAT NEEDS PRODUCTION SETTINGS INHERITED. Fan-out in
-# the collector is synchronous on the caller's goroutine
-# (`internal/fanoutconsumer`), so a blocked enqueue on one exporter stalls
-# everything behind it: with `block_on_overflow: true` the two backends are NOT
-# independent once one queue is full. The assertion has both halves — headroom
-# leaves the healthy backend untouched, a full queue does not.
-#
-# WHAT IT RETUNES, AND WHY THAT IS NOT CHEATING. Three values move, none of them
-# the subject of the assertion:
-#   queue_size      — 9 GiB is not reachable in a test. The claim is that a
-#                     *full* queue couples the backends, not how long the
-#                     production queue takes to fill.
-#   batch.timeout   — at 5s a record, filling the queue would take minutes.
-#   listener ports  — 34xxx, away from the delivery test's own 343xx listeners
-#                     and from both real deployments.
-# `block_on_overflow`, `retry_on_failure` (retry forever, so a stopped backend
-# holds its queue rather than expiring out of it), the exporter list of every
-# pipeline and the processor order are inherited untouched, because they are
-# what is being asserted on.
-#
-# Environment, supplied by the harness: OTELBOX_GATEWAY_TOKEN_FILE,
-# OTELBOX_GATEWAY_STORAGE, CLICKSTACK_INGESTION_API_KEY (unused here, but the
-# role layer expands it at load time), plus OTELBOX_CI_HEALTHY_ENDPOINT and
-# OTELBOX_CI_STALLED_ENDPOINT for the two backend doubles.
+# Environment: OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
+# CLICKSTACK_INGESTION_API_KEY (unused, but expanded at load time),
+# OTELBOX_CI_HEALTHY_ENDPOINT and OTELBOX_CI_STALLED_ENDPOINT.
 
 receivers:
   otlp/public:
@@ -48,10 +25,9 @@ receivers:
         endpoint: 127.0.0.1:34347
       http:
         endpoint: 127.0.0.1:34348
-  # The scenario posts here, unauthenticated: it is about queues, and routing it
-  # through the token check would only add a way for it to fail for an unrelated
-  # reason. `auth:` on otlp/public above is inherited and still enforced — the
-  # delivery test is what asserts on it.
+  # The scenario posts here unauthenticated: it is about queues, and the token
+  # check would only add an unrelated way to fail. `auth:` on otlp/public is
+  # inherited and still enforced.
   otlp/local:
     protocols:
       grpc:
@@ -60,9 +36,8 @@ receivers:
         endpoint: 127.0.0.1:34352
 
 processors:
-  # All three keys restated, because map keys merge one by one and an omitted
-  # key would silently keep the role layer's value. Only the timeout is
-  # deliberately different — see the header.
+  # All three keys restated because maps merge one by one; only the timeout is
+  # deliberately different.
   batch:
     timeout: 200ms
     send_batch_size: 8192
@@ -72,19 +47,15 @@ exporters:
   otlp_grpc/signoz:
     endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
     sending_queue:
-      # Eight times the queue below, on purpose. This is the backend that stays
-      # up: it drains, and it must never be the thing that blocks, or a stall
-      # could not be attributed to the other exporter.
+      # Eight times the other queue: this backend stays up and must never be the
+      # thing that blocks, or a stall could not be attributed to its neighbour.
       queue_size: 16777216
   otlp_grpc/clickstack:
     endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
     sending_queue:
-      # 2 MiB, still byte-sized as deployed, and it cannot usefully go lower:
-      # upstream refuses a queue smaller than the batcher's `min_size`, which is
-      # 1 MiB and inherited. The harness pads each record to a quarter of this,
-      # so a handful of them fills it — and a single record still fits, which
-      # matters because a request larger than the whole queue is rejected rather
-      # than blocked, and would prove nothing.
+      # Cannot usefully go lower: upstream refuses a queue below the batcher's
+      # inherited 1 MiB `min_size`, and a single record must still fit, since a
+      # request larger than the queue is rejected rather than blocked.
       queue_size: 2097152
 
 service:
@@ -97,15 +68,10 @@ service:
                 host: 127.0.0.1
                 port: 34899
   pipelines:
-    # Only `metrics/self` is restated, and only because a later layer cannot
-    # remove a key: left alone, `docker_stats` would open /var/run/docker.sock
-    # and kill startup on a runner that has none, and `prometheus/self` would
-    # scrape a Caddy admin endpoint that does not exist. Repointed at otlp/local
-    # both go unused and are never started.
-    #
-    # Every other pipeline is inherited whole — receivers and exporters by name,
-    # and the names have not changed — which is the point: the fan-out under
-    # test is the deployed one.
+    # Repointed rather than deleted, because a later layer cannot remove a key:
+    # left alone, `docker_stats` would open a Docker socket the runner does not
+    # have. Every other pipeline is inherited whole, so the fan-out under test is
+    # the deployed one.
     metrics/self:
       receivers: [otlp/local]
       processors: [memory_limiter, redaction/secrets, batch]

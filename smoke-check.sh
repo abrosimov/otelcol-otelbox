@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
-# Post-build smoke check for the OCB-built otelcol-otelbox binary.
+# Post-build smoke check: does the binary contain what builder.yaml declares?
 #
-# Verifies that every component declared in builder.yaml actually made it into
-# the binary, by comparing per-kind counts from the manifest against the
-# binary's own `components` output. Counts rather than names, deliberately:
-# a component's reported name is its type, not its Go module path, and the two
-# do not map mechanically (resourcedetectionprocessor → resource_detection,
-# otlpexporter → otlp_grpc, otlpreceiver → otlp). Counts are derivable from both
-# sides without a hand-maintained translation table that would rot on every bump.
-#
-# On top of the counts, two components are asserted by name because they carry
-# the invariants the collector exists for: file_storage (durability — the WAL
-# that survives outages) and redaction (privacy — credential stripping before
-# export).
+# Per-kind counts rather than names, because a component reports its type, not
+# its module path (resourcedetectionprocessor → resource_detection), and a
+# hand-maintained translation table would rot on every bump. file_storage and
+# redaction are additionally asserted by name — they are the invariants the
+# collector exists for.
 #
 # Usage: ./smoke-check.sh <binary> [builder.yaml]
-# Exits non-zero with a per-kind diff on any mismatch.
 
 set -euo pipefail
 
@@ -37,10 +29,8 @@ if [[ ! -f "${manifest}" ]]; then
     exit 66
 fi
 
-# Both files are YAML with the component kinds as top-level keys; entries are
-# `- gomod:` in the manifest and `- name:` in the binary's output. `kinds` seeds
-# every counter to 0 so an entirely missing section reports as 0, not as absent
-# (the binary prints `connectors: []` when none are linked).
+# Seeds every counter to 0 so a missing section reports as 0 rather than as
+# absent — the binary prints `connectors: []` when none are linked.
 _count() {
     awk -v kinds="${KINDS}" -v entry="$1" '
         BEGIN {

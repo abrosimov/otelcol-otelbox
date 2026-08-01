@@ -5,29 +5,17 @@
 #                   --config config/examples/edge.yaml \
 #                   --config test/config/edge-ci.yaml
 #
-# ┌───────────────────────────────────────────────────────────────────────────┐
-# │ CI ONLY. NEVER COPY ANY PART OF THIS FILE INTO A DEPLOYMENT.              │
-# │ It disables TLS verification on the edge→gateway leg (see below), which   │
-# │ every other configuration in this repository deliberately keeps on.       │
-# └───────────────────────────────────────────────────────────────────────────┘
+# CI ONLY — never copy any part of this into a deployment; it turns off TLS
+# verification on the edge→gateway leg. It changes ports and that one setting
+# and nothing else: a test run against retuned batch, queue or redaction values
+# would prove nothing about what is deployed.
 #
-# The overlay changes only what a loopback CI run cannot inherit: listener
-# ports, and the transport security of a hop that here never leaves the kernel.
-# Everything the test actually asserts on — the redaction patterns, the batch
-# and queue settings, the retry policy, the pipeline shapes — is inherited
-# unchanged from the two layers below, because a test that ran against retuned
-# values would prove nothing about what is deployed.
-#
-# The endpoint and the credential still arrive as environment variables, exactly
-# as launchd supplies them on a real workstation: OTELBOX_EDGE_STORAGE,
+# Environment, exactly as launchd supplies it: OTELBOX_EDGE_STORAGE,
 # OTELBOX_EDGE_ENDPOINT, OTELBOX_EDGE_TOKEN.
 
 extensions:
-  # 34133, not the deployed 13133. Every port in this overlay sits in a 34xxx
-  # block chosen to miss the ranges a developer's own collectors occupy — the
-  # edge uses 4317/4318/13133/8888 on a workstation and the gateway uses
-  # 14317-14322/8888/8889 on the server. A test that bound one of those would
-  # either fail to start or, far worse, silently exercise the running edge.
+  # The 34xxx block misses both a workstation edge (4317/4318/13133/8888) and
+  # the server gateway, so a test can never quietly exercise a running collector.
   health_check:
     endpoint: 127.0.0.1:34133
 
@@ -42,29 +30,17 @@ receivers:
 exporters:
   otlp_grpc/gateway:
     tls:
-      # THE ONE DANGEROUS LINE IN THIS REPOSITORY, AND IT IS FENCED IN HERE.
-      #
-      # config/examples/edge.yaml pins `insecure: false` and explains why: that
-      # leg crosses the public internet carrying a bearer token that grants
-      # ingest, so without verification the token is handed to whatever answers
-      # the DNS name. None of that is true of this overlay — both ends are this
-      # process's own loopback, and the traffic never reaches a network
-      # interface. Minting a certificate chain for 127.0.0.1 would test the CI
-      # runner's trust store, not the collector.
-      #
-      # If you are reading this line while writing a deployment: stop. The
-      # correct value there is `false`, and an expired certificate at the
-      # gateway is an incident to fix at the gateway.
+      # Safe only here: both ends are this process's own loopback, so minting a
+      # chain for 127.0.0.1 would test the runner's trust store, not the
+      # collector. In any deployment the value is `false` — see
+      # config/examples/edge.yaml for what the token is exposed to otherwise.
       insecure: true
 
 service:
   telemetry:
     metrics:
-      # Assertion 3 reads otelcol_exporter_send_failed_* from this endpoint —
-      # the whole point of that assertion is that a failing export is visible
-      # here rather than silent, so the port must be reachable from the test.
-      # `readers` is a list, so this entry replaces the base layer's 8888
-      # outright instead of adding a second scrape endpoint.
+      # The send-failed assertion scrapes this endpoint, so the test has to
+      # reach it. A list, so it replaces the base layer's 8888 outright.
       readers:
         - pull:
             exporter:

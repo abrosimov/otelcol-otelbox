@@ -1,52 +1,28 @@
 name: otelcol-otelbox
 
-# Build, prove and publish the slim OCB collector for both roles it serves:
-# `edge` on a macOS workstation (darwin/arm64) and `gateway` on the Ubuntu
-# server (linux/amd64).
+# Build, prove and publish the OCB collector for both roles: `edge` on a macOS
+# workstation (darwin/arm64), `gateway` on the Ubuntu server (linux/amd64).
 #
-# VERSION. `dist.version` in builder.yaml is the single source of truth, and it
-# is this artefact's own semantic version rather than the upstream collector's.
-# Bump it, merge to master, and this workflow publishes the matching
-# `v<version>` release — no hand-cut tags, there is no tag trigger and pushing
-# one does nothing. The tag carries no artefact prefix: this repository produces
-# exactly one artefact, so a prefix would only repeat its name on every tag. The
-# upstream version is read from the manifest's gomod pins instead, and travels
-# to the image and the release notes as a value of its own, because the version
-# number does not carry it.
+# `dist.version` in builder.yaml is the single source of truth: bump it, merge,
+# and this run publishes `v<version>` — there is no tag trigger, so a hand-cut
+# tag does nothing.
 #
-# WHAT RUNS WHEN. Building and testing run on every change to an input that
-# could break them (the manifest, the shared config layer, the role profiles,
-# the harness, the Dockerfile, this file) and on every pull request. Publishing
-# — the GHCR push and the GitHub release — is gated separately, on all three of:
-# the version being new, the run being on the default branch, and the event not
-# being a pull request.
+# Building and testing are ungated on purpose. Hang them off the
+# release-existence check and a change to config/base.yaml or the harness goes
+# uncompiled whenever its version is already released, and CI reports green on
+# code it never built. Only publishing is gated, on the version being new, the
+# ref being the default branch, and the event not being a pull request. To
+# re-publish, delete the release first, then `gh workflow run`.
 #
-# The release-existence check gates publishing and nothing else, and must not be
-# allowed to gate more. Hang the whole graph off it and a change to
-# config/base.yaml or to the test harness goes unbuilt and untested
-# whenever the version it belongs to is already released — CI then reports green
-# on code it has never compiled. Idempotence is kept where it belongs: an
-# existing release is never re-published or overwritten. To re-publish a
-# version, delete its release first, then `gh workflow run otelcol-otelbox.yml`.
-#
-# The consuming repositories read the same dist.version and download the
-# published assets; deployment itself lives there, not here.
-#
-# HOMEBREW. A formula pins a version and two checksums, and neither checksum can
-# exist before the release does, so the formula is written by the run that
-# publishes the release rather than by a human ahead of it — see the `formula`
-# job at the bottom. That is why this workflow writes to the repository, which
-# nothing else here does.
+# The `formula` job writes to this repository, which nothing else here does: a
+# formula pins checksums that cannot exist before the release they describe.
 
 on:
-  # The two path lists below are duplicated rather than shared through a YAML
-  # anchor: the Actions parser does not resolve aliases, so an anchor here would
-  # silently produce an empty filter and the workflow would run on everything.
-  # Keep them in step.
+  # The two path lists are duplicated because the Actions parser does not
+  # resolve YAML aliases — an anchor would silently match everything.
   push:
     branches: [master]
-    # Every path that can change what is built or what the tests prove.
-    # README.md and CLAUDE.md are deliberately absent: they cannot break a build.
+    # Documentation is absent on purpose: it cannot break a build.
     paths:
       - builder.yaml
       - smoke-check.sh
@@ -66,16 +42,14 @@ on:
       - .github/workflows/otelcol-otelbox.yml
   workflow_dispatch: {}
 
-# Denied at the top, granted per job. The jobs differ — only `release` writes
-# contents and only `image` writes packages — so a workflow-level grant would
-# hand every job the union of what any one of them needs.
+# Denied at the top, granted per job: a workflow-level grant would hand every
+# job the union of what any one of them needs.
 permissions: {}
 
 concurrency:
   group: otelcol-otelbox-${{ github.ref }}
-  # A superseded pull-request run is worth nothing, so cancel it. A run on the
-  # default branch may be halfway through pushing an image or creating a
-  # release, and cancelling that leaves a half-published version behind.
+  # A superseded pull-request run is worth nothing. A default-branch run may be
+  # mid-publish, and cancelling it leaves a half-published version behind.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -106,10 +80,9 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          # OCB must match the core collector modules it compiles, so the
-          # toolchain version comes from the otlpreceiver pin — core, always
-          # present, and moved by every upstream release — and deliberately not
-          # from dist.version, which now describes this artefact alone.
+          # OCB must match the core modules it compiles, so the toolchain
+          # version comes from the otlpreceiver pin and never from dist.version,
+          # which describes this artefact alone.
           upstream_pin="$(grep -E 'collector/receiver/otlpreceiver v' builder.yaml \
             | head -1 | awk '{print $NF}')"
           if [ -z "$upstream_pin" ]; then
@@ -120,9 +93,8 @@ jobs:
           echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
 
           # An upstream bump rewrites every pin by hand, and a line left behind
-          # compiles perfectly and ships a collector built from two upstream
-          # releases — nothing downstream would notice. Hence: all pins, one
-          # version, the one OCB is installed at.
+          # compiles perfectly into a collector assembled from two releases that
+          # nothing downstream would notice.
           disagreeing="$(grep -nE '^[[:space:]]*-[[:space:]]*gomod:' builder.yaml \
             | grep -vE "[[:space:]]${upstream_pin}[[:space:]]*\$" || true)"
           if [ -n "$disagreeing" ]; then
@@ -147,10 +119,8 @@ jobs:
           fi
           echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
 
-          # Publishing is the only thing gated here. Building and testing run
-          # unconditionally below: a change to the config layer or the harness
-          # must be compiled and exercised even when the version it belongs to
-          # is already released.
+          # Publishing is the only thing gated: the config layer and the harness
+          # must be built and exercised even at an already-released version.
           publish=false
           if [ "$release_exists" = "true" ]; then
             reason="release v$version already exists"
@@ -180,18 +150,14 @@ jobs:
     permissions:
       contents: read
     strategy:
-      # A darwin-only failure must not hide the linux result, and vice versa:
-      # the two targets share a manifest but not a toolchain or a runner image.
+      # A darwin-only failure must not hide the linux result: the two targets
+      # share a manifest but not a toolchain or a runner image.
       fail-fast: false
       matrix:
         include:
-          # Each target builds on a runner of its own architecture, because the
-          # smoke check below executes the binary to read its own `components`
-          # output. A cross-built binary cannot be checked at all — there is
-          # nothing on the other platform that can run it.
-          # Pinned to an explicit image rather than macos-latest: the -latest
-          # alias moves to each new GA image and would change the build host
-          # without a commit here. macos-14 was deprecated by GitHub.
+          # Each target builds natively because the smoke check runs the binary
+          # to read its `components` output, which a cross-build cannot do. The
+          # runner image is pinned so `-latest` cannot move the build host.
           - goos: darwin
             goarch: arm64
             runner: macos-26
@@ -210,10 +176,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
-          # There is no Go source and no go.sum at the repository root — OCB
-          # generates both into _build/ during this job. With caching left on,
-          # setup-go looks for a dependency file to key the cache on, finds
-          # none, and fails the step before a single line is compiled.
+          # No go.sum at the repository root — OCB generates one into _build/
+          # during this job — and setup-go fails when it has nothing to key a
+          # cache on.
           cache: false
 
       - name: Install OpenTelemetry Collector Builder (OCB)
@@ -225,18 +190,16 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # Static, for two reasons that happen to agree: the scratch image has
-          # no libc to dynamically link against, and a workstation binary must
-          # not depend on the CI runner's SDK version.
+          # Static: the scratch image has no libc, and a workstation binary must
+          # not depend on the runner's SDK version.
           CGO_ENABLED: "0"
         run: |
           "$(go env GOPATH)/bin/builder" --config builder.yaml
           install -m 0755 _build/otelcol-otelbox "$ASSET"
 
       - name: Smoke-check linked components
-        # Compares per-kind component counts against builder.yaml, so a dropped
-        # component fails the build instead of shipping a silently thin binary.
-        # Runs natively — see the matrix comment.
+        # A dropped component fails the build rather than shipping a silently
+        # thin binary.
         run: ./smoke-check.sh "./$ASSET" builder.yaml
 
       - name: Checksum
@@ -251,10 +214,8 @@ jobs:
           cat "$ASSET.sha256"
 
       - name: Upload the binary and its checksum
-        # The artefact is how every later job gets this binary. Nothing
-        # downstream rebuilds it: the image, the config validation, the
-        # integration test and the release all consume exactly these bytes, so
-        # what was tested is what is shipped.
+        # Nothing downstream rebuilds: the image, the validation, the test and
+        # the release all consume these bytes, so what was tested is shipped.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset }}
@@ -275,33 +236,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download the linux binary
-        # Either binary would do: the two link an identical component set from
-        # the same manifest, and `validate` unmarshals the configuration without
-        # starting anything platform-specific. Linux is chosen because the
-        # runner is a tenth of the price of a macOS one.
+        # Either binary would do — same manifest, and `validate` starts nothing
+        # platform-specific — and the Linux runner is a tenth of the price.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: otelcol-otelbox_linux_amd64
 
       - name: Restore the executable bit
-        # The artefact upload does not preserve file modes, so what comes back
-        # is 0644 and unrunnable. Every job that downloads a binary needs this.
+        # Artefact downloads lose the mode, so what comes back is unrunnable.
+        # Every job that downloads a binary needs this.
         run: chmod +x otelcol-otelbox_linux_amd64
 
       - name: Validate the edge and gateway profiles as they actually compose
-        # Neither role layer is a runnable configuration on its own, and neither
-        # is the base layer: base carries the processors and self-telemetry, the
-        # role layer carries the receivers, exporters, storage and pipelines.
-        # They are therefore validated in the same order the deployment loads
-        # them, base first, because a merge error can only appear in the
-        # composition.
+        # Neither layer is runnable alone, so they are validated in the order
+        # the deployment loads them: a merge error appears only in composition.
         env:
-          # Both layers expand ${env:...} at load time, so validation needs a
-          # value for every variable the profiles reference — an unset one is a
-          # load error, not a default. Discovered by reading the configs:
-          # edge needs OTELBOX_EDGE_{STORAGE,ENDPOINT,TOKEN}; gateway needs
-          # OTELBOX_GATEWAY_{TOKEN_FILE,STORAGE} and CLICKSTACK_INGESTION_API_KEY.
-          # The values are dummies — nothing is dialled or opened here.
+          # An unset ${env:...} is a load error, not a default, so every
+          # variable the profiles reference needs a dummy value here.
           OTELBOX_EDGE_ENDPOINT: 127.0.0.1:4317
           OTELBOX_EDGE_TOKEN: ci-validation-placeholder
           CLICKSTACK_INGESTION_API_KEY: ci-validation-placeholder
@@ -310,9 +261,8 @@ jobs:
           export OTELBOX_EDGE_STORAGE="${state}/edge"
           export OTELBOX_GATEWAY_STORAGE="${state}/gateway"
           export OTELBOX_GATEWAY_TOKEN_FILE="${state}/ingest-tokens"
-          # A real file rather than a bare path: bearertokenauth/ingest is given
-          # a filename, and a validation that passed on a path pointing at
-          # nothing would be weaker than one that does not.
+          # A real file: a validation that passed on a path pointing at nothing
+          # would be weaker than one that does not.
           printf 'ci-validation-placeholder  not a real credential\n' \
             > "$OTELBOX_GATEWAY_TOKEN_FILE"
 
@@ -336,17 +286,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build the configuration bundle
-        # Why a release asset at all: the Homebrew formula has to fetch the
-        # shared base layer and the reference profiles from somewhere it can
-        # checksum. The tag's auto-generated source tarball would need no new
-        # asset, but GitHub regenerates those on cache miss and their bytes have
-        # changed under a pinned digest before — which would break an installed
-        # formula at some unrelated later date. A release asset is immutable.
-        #
-        # One top-level `config/` directory, because that is what Homebrew's
-        # resource staging strips. The flags drop the runner's uid, gid, mtimes
-        # and directory order from the archive, so its digest tracks the
-        # configuration rather than facts about the machine that packed it.
+        # An asset rather than the tag's source tarball, which GitHub
+        # regenerates on cache miss and has moved under a pinned digest before.
+        # The flags drop uid, gid, mtimes and directory order so the archive's
+        # digest tracks the configuration, not the machine that packed it.
         run: |
           tar --create --gzip \
             --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
@@ -385,38 +328,20 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
-          # The harness is stdlib-only and therefore has no go.sum. With caching
-          # left on, setup-go looks for a dependency file to key the cache on,
-          # finds none, and fails the step before a single test runs.
+          # The harness is stdlib-only, so there is no go.sum for setup-go to
+          # key a cache on and it fails the step outright.
           cache: false
 
       - name: Run the end-to-end pipeline test
         # THE TRAP THIS STEP EXISTS FOR. The deployed edge failed every export
-        # for days while every local signal stayed green: the process ran, the
-        # supervisor reported it alive, the health endpoint answered 200, the
-        # OTLP receiver accepted everything sent to it. All of those prove the
-        # local half of the pipeline and none of them prove delivery, so a wrong
-        # ingestion token looked exactly like a healthy collector and the
-        # telemetry was simply gone. The smoke check above has the same blind
-        # spot by construction — it proves the binary contains components, not
-        # that anything reaches the far end.
+        # for days while the process ran, the health endpoint answered 200 and
+        # the receiver accepted everything — none of which proves delivery, so a
+        # wrong token looked exactly like a healthy collector. The smoke check
+        # shares that blind spot; this harness asserts on the far end.
         #
-        # The harness stands the real thing up: processes of this binary in the
-        # roles it serves, wired over loopback with the same authenticated hop
-        # the deployment uses, asserting on what came out of the far end — plus
-        # a second scenario proving that two gateway backends stall together
-        # once one queue is full. It needs the repository checked out, because
-        # it resolves config/base.yaml and the role profiles relative to its own
-        # package directory, and nothing else: no module downloads, no runner
-        # packages.
-        #
-        # `-args` rather than a bare flag so the go command hands
-        # -otelcol-binary to the test binary verbatim; the path must be absolute
-        # because the tests run in their own package directory. `-count=1`
-        # because a cached PASS would be a green tick for a binary this run
-        # never touched. Its own bounded polls cap a failing run at roughly five
-        # minutes, well inside -timeout; the job timeout above is the backstop
-        # for a hang that escapes both.
+        # `-args` hands -otelcol-binary to the test binary verbatim, absolute
+        # because the tests run in their own directory. `-count=1` because a
+        # cached PASS would be a green tick for a binary this run never touched.
         working-directory: test/harness
         run: |
           go test . -count=1 -v -timeout 15m \
@@ -436,29 +361,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download the linux binary into the build context
-        # The Dockerfile packages, never compiles: it COPYs
-        # otelcol-otelbox_linux_amd64 from the context root, and .dockerignore
-        # whitelists exactly that name. So the image ships byte-for-byte the
-        # binary this run built and tested, rather than a second one built from
-        # the same source at a different moment.
+        # The Dockerfile packages and never compiles, so the image ships the
+        # exact binary this run tested rather than a second build of it.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: otelcol-otelbox_linux_amd64
 
       - name: Stamp the build metadata
         id: stamp
-        # Real values, not the Dockerfile's honest defaults: the labels are what
-        # a server operator has to correlate a running container back to a
-        # commit with.
+        # The labels are what an operator correlates a running container back to
+        # a commit with, so they carry real values rather than the defaults.
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GHCR
-        # Only when something is going to be pushed. A pull request from a fork
-        # gets a read-only token, and a login attempt with it would fail the job
-        # for a step whose output is thrown away anyway.
+        # Only when something is pushed: a fork's pull request gets a read-only
+        # token, and logging in with it would fail the job for nothing.
         if: needs.resolve.outputs.publish == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -476,20 +396,16 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: ${{ needs.resolve.outputs.publish == 'true' }}
-          # Buildx would otherwise attach a provenance attestation, which turns
-          # a single-platform push into a manifest index. The digest published
-          # below would then name the index rather than the image, and the whole
-          # point of publishing it is that the deployment can pin the exact
-          # bytes it will run.
+          # A provenance attestation turns a single-platform push into a
+          # manifest index, and the published digest would then name the index
+          # rather than the bytes the deployment pins.
           provenance: false
           sbom: false
-          # One tag, the exact version. No `latest`: a moving tag is precisely
-          # what pinning by digest exists to avoid, and offering both invites
-          # the server to be reconciled against whichever one was easier.
+          # No `latest`: a moving tag is what pinning by digest exists to avoid,
+          # and offering both invites a reconcile against whichever is easier.
           tags: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
-          # UPSTREAM_VERSION is separate from VERSION because neither implies
-          # the other: an operator reading the image has to be able to tell
-          # which collector release is inside it.
+          # UPSTREAM_VERSION is separate because neither implies the other, and
+          # an operator has to be able to tell which collector is inside.
           build-args: |
             VERSION=${{ needs.resolve.outputs.version }}
             UPSTREAM_VERSION=${{ needs.resolve.outputs.upstream_version }}
@@ -506,10 +422,8 @@ jobs:
       contents: write # gh release create
     env:
       GH_TOKEN: ${{ github.token }}
-      # This job never checks the repository out — it assembles a release from
-      # artefacts other jobs built. Without a working tree `gh` has no git
-      # remote to infer the target repository from and refuses to run, so name
-      # it explicitly rather than cloning a source tree nothing here reads.
+      # This job never checks out, so `gh` has no remote to infer the target
+      # repository from and has to be told.
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.resolve.outputs.version }}
       UPSTREAM_VERSION: ${{ needs.resolve.outputs.upstream_version }}
@@ -517,9 +431,8 @@ jobs:
       DIGEST: ${{ needs.image.outputs.digest }}
     steps:
       - name: Download the binaries, their checksums and the configuration bundle
-        # The `otelcol-otelbox_*` pattern is what makes this one step rather
-        # than three: every artefact meant for the release is named for the
-        # asset it becomes, so a new asset needs a new job and nothing here.
+        # Every artefact meant for the release is named for the asset it
+        # becomes, so a new asset needs a new job and nothing here.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: otelcol-otelbox_*
@@ -527,14 +440,9 @@ jobs:
           path: dist
 
       - name: Record the image digest as a release asset
-        # How the digest is exposed, and why as a file. The server's Docker
-        # Compose deployment lives in another repository and must pin
-        # `image: ...@sha256:...` without reading builder.yaml across the
-        # repository boundary. The release is the only surface both sides
-        # already agree on, so the digest ships as an asset holding one
-        # pinnable reference on a single line — trivial for Ansible or a shell
-        # to consume — and is repeated in the notes for a human reading the
-        # release page.
+        # The server's Compose file lives in another repository and must pin a
+        # digest without reading across the boundary, and the release is the one
+        # surface both sides already agree on.
         run: |
           if [ -z "$DIGEST" ]; then
             echo "the image job produced no digest — refusing to publish a release" >&2
@@ -545,9 +453,8 @@ jobs:
           cat dist/image-digest.txt
 
       - name: Compose the release notes
-        # The upstream version is stated rather than implied: the version number
-        # is this artefact's own and says nothing about it, and a reader still
-        # has to know which collector release is inside.
+        # The upstream version is stated in prose because the release number is
+        # this artefact's own and says nothing about it.
         run: |
           cat > notes.md <<EOF
           OCB-built durable OpenTelemetry collector, version ${VERSION}, built
@@ -626,11 +533,9 @@ jobs:
           cat notes.md
 
       - name: Publish release
-        # --target pins the tag to the commit that was actually built and
-        # tested, rather than to whatever the default branch has moved to since.
-        # The upload fallback covers the narrow race of two runs reaching this
-        # step for the same new version; the publish gate keeps it from ever
-        # touching a release that already existed when the run started.
+        # --target pins the tag to the commit that was tested, not to wherever
+        # the branch has moved since. The upload fallback covers two runs
+        # reaching this step for the same new version.
         run: |
           tag="v${VERSION}"
           gh release create "$tag" \
@@ -643,12 +548,9 @@ jobs:
   formula:
     name: Refresh the Homebrew formula
     needs: [resolve, release]
-    # The publish gate, restated rather than inherited silently. `release` only
-    # runs when resolve decided to publish, and resolve decides false for every
-    # pull request — fork or not, because the event name alone disqualifies it —
-    # and for every ref that is not the default branch. Repeating the condition
-    # here keeps the `contents: write` grant below visibly conditional on the
-    # same thing rather than on a chain the reader has to reconstruct.
+    # The publish gate restated rather than inherited, so the `contents: write`
+    # grant below is visibly conditional on it rather than on a chain the reader
+    # has to reconstruct.
     if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -659,50 +561,32 @@ jobs:
       VERSION: ${{ needs.resolve.outputs.version }}
       FORMULA: Formula/otelcol-otelbox.rb
     steps:
-      # WHY CI WRITES THE FORMULA INSTEAD OF CHECKING IT.
-      # A formula pins a version and the checksums of the assets at that
-      # version. The checksums cannot be known before the release exists, so a
-      # human cannot commit a correct formula ahead of the build, and a check
-      # that merely failed on drift would therefore go red on every single
-      # version bump, by construction, until someone downloaded the freshly
-      # published asset and pasted its digest back. That is a gate that is
-      # always failing for a reason nobody can pre-empt, which is a gate people
-      # learn to ignore. The run that produces the bytes is the only actor that
-      # can describe them honestly, so it does.
-      #
-      # The price, accepted knowingly: this workflow pushes a commit to the
-      # default branch, and a repository whose CI writes to it is a repository
-      # where `git log` no longer means only "what a human decided". It is
-      # bounded — one file, one job, only after a successful publish, and the
-      # step below refuses to push anything it cannot verify it just wrote.
+      # WHY CI WRITES THE FORMULA INSTEAD OF CHECKING IT. A checksum cannot be
+      # known before the release exists, so a drift check would go red on every
+      # version bump by construction — and a gate that always fails is one
+      # people learn to ignore. The price is a CI commit on the default branch,
+      # bounded to one file after a successful publish.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A push event checks out a detached SHA and there is nothing to
-          # commit onto. The publish gate already guarantees this ref is the
-          # default branch.
+          # A push event checks out a detached SHA, with nothing to commit onto.
           ref: ${{ github.ref_name }}
-          # Stated rather than left to the action's default, which has not been
-          # the same across its major versions: without credentials the push
-          # below fails at the very end of a successful release run.
+          # Stated because the action's default has moved across major
+          # versions, and without it the push fails at the end of a good run.
           persist-credentials: true
 
       - name: Hash the assets the release actually serves
         id: digests
-        # Downloaded from the release rather than reused from this run's build
-        # artefacts, which hold the same bytes. What `brew install` fetches is
-        # what the release serves, so that is what gets hashed; pinning a digest
-        # computed from anything else would leave one upload failure between the
-        # formula and reality.
+        # Hashed from the release rather than from this run's artefacts, which
+        # hold the same bytes: what `brew install` fetches is what the release
+        # serves, and one failed upload would part the two.
         run: |
           gh release download "v${VERSION}" \
             --pattern otelcol-otelbox_darwin_arm64 \
             --pattern otelcol-otelbox_config.tar.gz \
             --dir published
 
-          # Assignments rather than substitutions inside `echo`, so that a
-          # failure here stops the job. An empty digest would otherwise sail
-          # through the rewrite and past its own verification — `sha256 ""` is
-          # a line that matches everything asked of it and installs nothing.
+          # Assignments rather than substitutions inside `echo`, so a failure
+          # stops the job: `sha256 ""` passes every check and installs nothing.
           binary_sha="$(sha256sum published/otelcol-otelbox_darwin_arm64 | awk '{print $1}')"
           config_sha="$(sha256sum published/otelcol-otelbox_config.tar.gz | awk '{print $1}')"
           for digest in "$binary_sha" "$config_sha"; do
@@ -725,20 +609,10 @@ jobs:
         env:
           BINARY_SHA: ${{ steps.digests.outputs.binary }}
           CONFIG_SHA: ${{ steps.digests.outputs.config }}
-        # Anchored on the formula's shape, not on marker comments: the `version`
-        # line, the release-tag segment of every URL, and the two `sha256` lines
-        # told apart by their indentation — two spaces at formula level, four
-        # inside the `resource` block. `brew style` enforces exactly that
-        # indentation, which is what makes it an anchor rather than a guess. The
-        # verification step below is the backstop for the day it stops being one.
-        #
-        # The tag is bare — `v` and the version, with no artefact prefix in
-        # front of it — so it is not a distinctive string and cannot be matched
-        # on its own: `v[^/"]*/` would find the `v` in the owner login
-        # `abrosimov/` first and rewrite that instead. The release download path
-        # is what identifies a tag, and it is deliberately matched without the
-        # repository segment, so a repository rename needs no edit here and is
-        # caught by the sweep below instead.
+        # Anchored on the formula's shape — the `version` line and the two
+        # `sha256` lines told apart by the indentation `brew style` enforces.
+        # The tag is matched through the download path because a bare `v1.2.3`
+        # is not distinctive enough: `v[^/"]*/` would hit the owner login first.
         run: |
           sed -i -E \
             -e "s|^  version \".*\"\$|  version \"${VERSION}\"|" \
@@ -751,9 +625,8 @@ jobs:
         env:
           BINARY_SHA: ${{ steps.digests.outputs.binary }}
           CONFIG_SHA: ${{ steps.digests.outputs.config }}
-        # A sed that matched nothing exits 0 and leaves the previous version in
-        # place, which is precisely the silent staleness this job exists to
-        # prevent. Every literal is therefore read back.
+        # A sed that matched nothing exits 0 and leaves the old version behind,
+        # which is the silent staleness this job exists to prevent.
         run: |
           ruby -c "$FORMULA" > /dev/null
 
@@ -767,29 +640,12 @@ jobs:
           grep -qxF "  sha256 \"${BINARY_SHA}\"" "$FORMULA" || fail "binary checksum"
           grep -qxF "    sha256 \"${CONFIG_SHA}\"" "$FORMULA" || fail "config bundle checksum"
 
-          # Every release download URL in the file must name this repository and
-          # this version's tag, and no other, so a URL the sed missed cannot
-          # hide behind one it rewrote. `sort -u` collapses the two URLs that
-          # agree into one line, so anything but a single expected line is a
-          # half-applied rewrite.
-          #
-          # WHY THE WHOLE URL PREFIX AND NOT THE TAG ALONE. A bare `v1.0.0` is
-          # not a distinctive string, so the pattern has to be anchored on the
-          # download path regardless; once it is, including the owner and
-          # repository segments costs nothing and closes the neighbouring hole,
-          # where both URLs carry the right tag but point at a repository the
-          # release does not live in — which is what a repository rename leaves
-          # behind, silently, in a file nothing else is watching.
-          # `GITHUB_REPOSITORY` rather than a literal, so a rename is caught
-          # instead of needing this line rewritten too. An empty capture fails
-          # here as loudly as a wrong one:
-          # a formula whose URLs no longer look like release downloads at all is
-          # exactly the shape drift this step exists to refuse.
-          #
-          # `|| true` so that no match reaches the comparison as an empty string
-          # and gets the diagnostic below, rather than aborting the step on the
-          # assignment under whichever `-e`/`pipefail` combination the runner's
-          # default shell is using this year.
+          # `sort -u` collapses the two agreeing URLs into one line, so anything
+          # else is a half-applied rewrite that a matched URL could hide. The
+          # owner and repository segments come from GITHUB_REPOSITORY so a
+          # rename is caught here rather than left pointing at a dead release.
+          # `|| true` keeps an empty capture reaching the diagnostic below
+          # instead of aborting the step.
           urls="$(grep -oE 'https://github\.com/[^"/]+/[^"/]+/releases/download/[^/"]+' \
             "$FORMULA" | sort -u || true)"
           expected="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
@@ -800,9 +656,8 @@ jobs:
           fi
 
       - name: Commit and push the refreshed formula
-        # Nothing re-triggers this workflow: a push authenticated with
-        # GITHUB_TOKEN does not start workflow runs at all, and Formula/** is
-        # absent from the path filters at the top independently of that.
+        # Nothing re-triggers this workflow: GITHUB_TOKEN pushes do not start
+        # runs, and Formula/** is absent from the path filters anyway.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -812,9 +667,8 @@ jobs:
             exit 0
           fi
           git commit -m "Pin the Homebrew formula to otelcol-otelbox ${VERSION}"
-          # The branch may have moved while the build ran. One rebase is enough:
-          # the run that moved it is queued behind this one on the shared
-          # concurrency group, so there is no third writer to race.
+          # The branch may have moved while the build ran. One rebase suffices:
+          # the concurrency group leaves no third writer to race.
           git pull --rebase --autostash origin "$GITHUB_REF_NAME"
           git push origin "HEAD:$GITHUB_REF_NAME"
 

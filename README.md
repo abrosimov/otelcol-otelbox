@@ -317,10 +317,9 @@ deployment's to choose; `remote_server_setup` owns the ones the server uses.
 ## Current state
 
 - `builder.yaml` declares `1.0.0`, built on upstream `v0.156.0`.
-- **No release exists.** `Formula/otelcol-otelbox.rb` already names `1.0.0` in
-  its `version` line and in both release URLs, but carries
-  `PENDING-FIRST-CI-PUBLISH` in place of both checksums. That is deliberate: no
-  honest digest can be written for bytes that have not been published, and a
-  formula with no `sha256` at all installs after only a warning, whereas this
-  value is rejected outright. The formula cannot install until a publishing run
-  rewrites both checksums with the digests of the assets it actually served.
+- **`v1.0.0` is published**, and the formula carries the checksums the
+  publishing run wrote for it, so it installs. The version line and both digests
+  belong to CI.
+- The server runs the artefact (`remote_server_setup`, changes uncommitted
+  there); the workstation does not — `devbox-setup` still builds an edge
+  collector of its own.

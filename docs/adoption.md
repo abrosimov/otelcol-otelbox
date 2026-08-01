@@ -2,8 +2,9 @@
 
 This document is the handover for the one piece of work this repository does
 not do itself: getting `remote_server_setup` and `devbox-setup` off their
-pre-split arrangements and onto this artefact. Neither repository has been
-touched as of this writing. It is written for a session with none of the
+pre-split arrangements and onto this artefact. The server half is done
+(uncommitted in that repository); the workstation half has not been started. It
+is written for a session with none of the
 context that produced it — it states reasoning, not just steps, and where a
 consuming repository's own procedure is involved it names the file and stops,
 per the scope boundary in `AGENTS.md`: this repository owns the artefact and
@@ -14,9 +15,9 @@ the shared configuration layer, not the deployment.
 `v1.0.0` is published. The release carries both binaries and their `.sha256`
 files, `otelcol-otelbox_config.tar.gz`, and `image-digest.txt` holding
 `ghcr.io/abrosimov/otelcol-otelbox@sha256:e15a4965689ea6f40ff91b8ff4d341db26ca5a7172a12d6726617b1b297dd98d`.
-`Formula/otelcol-otelbox.rb` was rewritten by CI and carries that same digest's
-sibling checksums for the two binaries — no `PENDING-FIRST-CI-PUBLISH`
-placeholders remain.
+`Formula/otelcol-otelbox.rb` was rewritten by CI and carries the published
+checksums of the two assets it installs — the `darwin/arm64` binary and the
+configuration bundle — so no `PENDING-FIRST-CI-PUBLISH` placeholders remain.
 
 ## Estate view
 
@@ -96,6 +97,9 @@ debugging two problems — the adoption and the pre-existing incident — at
 once, unable to tell which one produced a given symptom.
 
 ## Step one — `remote_server_setup`
+
+**Done, uncommitted.** Kept as written because it states the reasoning behind
+each edit, which the diff does not carry.
 
 ### What changes
 

@@ -1,25 +1,17 @@
-# otelbox — CI BACKEND DOUBLE. NOT a role, and deliberately NOT composed with
+# otelbox — CI BACKEND DOUBLE. Not a role, and never composed with
 # config/base.yaml:
 #
 #   otelcol-otelbox --config test/config/backend-ci.yaml
 #
-# ┌───────────────────────────────────────────────────────────────────────────┐
-# │ CI ONLY. NEVER COPY ANY PART OF THIS FILE INTO A DEPLOYMENT.              │
-# └───────────────────────────────────────────────────────────────────────────┘
+# CI ONLY, never copied into a deployment. It stands in for SigNoz and
+# ClickStack in the coupling scenario, which needs a backend that can be
+# *stopped* — a process can be killed, a file handle cannot. Trivial on purpose:
+# receiver straight to file, no processors, so nothing it did to the data could
+# be attributed to the collector under test.
 #
-# Stands in for SigNoz and ClickStack in the backend-coupling scenario. It
-# exists because that scenario needs a backend that can be *stopped*: the `file`
-# sink in gateway-ci.yaml drains for as long as the process lives, and a queue
-# that always drains can never overflow. A process can be killed; a file handle
-# cannot.
-#
-# Two of these run side by side — one kept up throughout, one started only after
-# the stall has been observed — so every endpoint and path arrives from the
-# environment: OTELBOX_CI_BACKEND_ENDPOINT, OTELBOX_CI_BACKEND_SINK,
+# Two run side by side, so every endpoint and path comes from the environment:
+# OTELBOX_CI_BACKEND_ENDPOINT, OTELBOX_CI_BACKEND_SINK,
 # OTELBOX_CI_BACKEND_METRICS_PORT.
-#
-# Trivial on purpose: receiver straight to file, no processors. Anything this
-# double did to the data would be attributed to the collector under test.
 
 receivers:
   otlp:
@@ -31,16 +23,15 @@ exporters:
   file/sink:
     path: ${env:OTELBOX_CI_BACKEND_SINK}
     format: json
-    # Below the 1s default: the test polls this file, and the flush interval is
-    # dead time added to every bounded wait.
+    # Below the 1s default: the flush interval is dead time added to every
+    # bounded wait in the test.
     flush_interval: 200ms
 
 service:
   telemetry:
     metrics:
-      # Bound per instance from the environment. Two of these run at once, and
-      # the collector's default 8888 would collide both with the other instance
-      # and with a developer's own edge.
+      # Per instance from the environment: the default 8888 would collide with
+      # the other double and with a developer's own edge.
       readers:
         - pull:
             exporter:
@@ -48,9 +39,8 @@ service:
                 host: 127.0.0.1
                 port: ${env:OTELBOX_CI_BACKEND_METRICS_PORT}
   pipelines:
-    # All three signals, though the scenario only sends logs: a double that
-    # refused a signal would fail as an obscure export error in the gateway's
-    # log rather than as anything the test can name.
+    # All three signals, though only logs are sent: a double refusing a signal
+    # would surface as an obscure export error rather than a named failure.
     traces:
       receivers: [otlp]
       exporters: [file/sink]

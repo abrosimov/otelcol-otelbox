@@ -262,6 +262,11 @@ receivers, 8 processors, 3 exporters, 7 extensions, 5 connectors), of which any
 given role config wires a handful. A linked component costs binary size only and
 is dormant until a pipeline references it, which needs no rebuild.
 
+`prometheusreceiver` alone accounts for ~67 MB of the 264 MB `darwin/arm64`
+binary — the same manifest without it built to 197 MB. It stays because the
+gateway wires it as `prometheus/self`, and one artefact serves both roles, so
+workstations carry it unused.
+
 Its blind spot is why the next section exists: it proves the binary contains
 components, not that anything reaches the far end.
 
@@ -331,16 +336,14 @@ detector only runs when the pipeline starts.
 ## Known state
 
 - `builder.yaml` declares `1.0.0`, built on upstream `v0.156.0`.
-- **No release exists.** `Formula/otelcol-otelbox.rb` already names `1.0.0` in
-  its `version` line and in both release URLs, but carries
-  `PENDING-FIRST-CI-PUBLISH...` in place of both checksums, which Homebrew
-  rejects outright — deliberately, since a formula with no `sha256` at all
-  installs after only a warning, and no honest digest can be written for bytes
-  that have not been published. Both the version and the checksums are CI's to
-  write; leave them alone.
-- Neither consuming repository has been touched yet.
-  `remote_server_setup/roles/otel_gateway/templates/compose.yaml.j2` still pins
-  the upstream `otel/opentelemetry-collector-contrib:0.156.0` image.
+- **`v1.0.0` is published** (2026-08-01), and `Formula/otelcol-otelbox.rb`
+  carries the checksums CI wrote for it in `94e2b59`. Both digests and the
+  version line stay CI's to write.
+- `remote_server_setup` has adopted the artefact — GHCR image pinned by digest,
+  both config layers, `files/base.yaml` copied from `config/base.yaml` — but the
+  changes are **not committed** there yet.
+- `devbox-setup` is untouched: it still builds and installs its own edge
+  collector from `otelcol-edge/builder.yaml`.
 - The edge authentication incident above was never diagnosed on the server side.
   The gateway's token-file format is not the cause — upstream parses that file
   line by line and treats text after the first whitespace as a comment, which is
@@ -351,17 +354,12 @@ detector only runs when the pipeline starts.
 
 ## Still outstanding
 
-The remaining work is entirely on the consuming side, and neither half has been
-started:
+The remaining work is entirely on the consuming side; `remote_server_setup` is
+done (see "Known state"), leaving:
 
-- `remote_server_setup` swaps the upstream contrib image for this repository's
-  GHCR image (pinned by the digest from `image-digest.txt`) and adopts the
-  shared base layer, so its `command` passes `--config base.yaml --config
-  <role>.yaml`. The existing Docker Compose deployment stays otherwise intact —
-  the `image:` reference, the config paths in `command`, and the same paths in
-  that role's `validate` task are what change.
-- `devbox-setup` adopts the edge profile, which is also where the `otlp` →
-  `otlp_grpc` and `resourcedetection` → `resource_detection` renames land.
+- `devbox-setup` adopts the edge profile — where the `otlp` → `otlp_grpc` and
+  `resourcedetection` → `resource_detection` renames land — and stops building a
+  collector of its own, pinning a release of this repository instead.
 
 A design note worth keeping while doing either: gateway queues keep
 `block_on_overflow: true` on every exporter, and splitting backends across
@@ -375,11 +373,12 @@ against a `remote_server_setup` runbook that claims the opposite.
 
 ## Conventions
 
-- **Comments in these files are load-bearing.** Every YAML/bash file carries a
-  header, and most settings carry a line, explaining *why* the value is what it
-  is. Several of them are the only record of a decision or a trap. Preserve and
-  update them rather than stripping them; a tidy-up that deletes one is a
-  regression.
+- **Comments answer "why", in one or two sentences.** Every YAML/bash file
+  carries a short header, and a setting carries a line only where the reason is
+  not obvious from the value — several are the only record of a decision or a
+  trap. Update them with the code rather than stripping them, but do not restate
+  what the line already says, and do not let one grow into a paragraph: the
+  rewrite that cut this repository's comments by half deleted no reasons.
 - `dist.version` in `builder.yaml` is deliberately **unquoted**: CI reads it with
   `awk`, not a YAML parser, and would otherwise keep the quotes.
 - Ports: the workstation edge holds 4317/4318/13133/8888; the server gateway
