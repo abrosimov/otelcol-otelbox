@@ -1,0 +1,10 @@
+# The image needs exactly one file from this repository: the linux/amd64
+# collector binary that CI has already built. Excluding everything else keeps
+# the upload small and, more importantly, stops unrelated edits — the OCB
+# manifest, workflows, documentation, git metadata, local build output — from
+# invalidating the layer cache on every commit.
+#
+# The catch-all matches dotfiles too (Docker's matcher is not a shell glob), so
+# .git and .github need no separate entry.
+*
+!otelcol-otelbox_linux_amd64

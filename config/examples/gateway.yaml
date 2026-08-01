@@ -1,0 +1,251 @@
+# otelbox — GATEWAY ROLE LAYER (reference profile).
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ REFERENCE PROFILE, NOT A DEPLOYED ARTEFACT.                               │
+# │ The authoritative copy of the gateway role lives in `remote_server_setup` │
+# │ (`roles/otel_gateway/files/config.yaml`), which ships it to the server    │
+# │ and supervises it with Docker Compose. Editing this file changes nothing  │
+# │ on the server. It exists so CI can prove that the shared base layer still │
+# │ composes into a valid, runnable role configuration — which is only worth  │
+# │ anything if it stays a faithful mirror, so any change made in the         │
+# │ consuming repository belongs here too.                                    │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Loaded second, after the shared base layer:
+#
+#   otelcol-otelbox --config config/base.yaml --config config/examples/gateway.yaml
+#
+# This layer owns the server's listeners, its per-backend WALs, its backend
+# credentials and the pipelines wiring them together. `redaction/secrets` comes
+# from the base layer unchanged; `memory_limiter` and `batch` are restated below
+# purely to override the base layer's edge-sized values.
+#
+# Secrets arrive only as environment variables or mounted files injected by the
+# supervisor from Ansible Vault. Required: OTELBOX_GATEWAY_TOKEN_FILE,
+# OTELBOX_GATEWAY_STORAGE, CLICKSTACK_INGESTION_API_KEY.
+
+extensions:
+  bearertokenauth/ingest:
+    filename: ${env:OTELBOX_GATEWAY_TOKEN_FILE}
+
+  # One WAL per backend, never a shared one: SigNoz being down must not consume
+  # the disk budget that ClickStack's backlog is relying on, and a corrupted
+  # bbolt file must cost one backend rather than both.
+  file_storage/signoz:
+    directory: ${env:OTELBOX_GATEWAY_STORAGE}/signoz
+    create_directory: true
+    fsync: true
+    # 10 GiB. This is a cap on the single bbolt file underneath this directory,
+    # not on the directory as a whole — the compaction directory below is
+    # accounted separately, and compaction writes a compacted copy alongside the
+    # live file before swapping, so the filesystem must have room for both at
+    # once. Budget headroom accordingly rather than filling the volume to this
+    # number. Agreed upper bound if this ever needs raising: 20 GiB per backend.
+    max_size: 10737418240
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/signoz
+
+  file_storage/clickstack:
+    directory: ${env:OTELBOX_GATEWAY_STORAGE}/clickstack
+    create_directory: true
+    fsync: true
+    # See file_storage/signoz: per-bbolt-file cap, compaction needs headroom
+    # alongside it, 20 GiB per backend is the agreed ceiling.
+    max_size: 10737418240
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/clickstack
+
+receivers:
+  # Bound to loopback even though this is the public ingress: the reverse proxy
+  # terminates TLS and forwards here, so the listener itself is never exposed.
+  # Authentication is still required — the proxy is a network hop, not a trust
+  # boundary, and anything already on this host would otherwise ingest freely.
+  otlp/public:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:14319
+        max_recv_msg_size_mib: 8
+        auth:
+          authenticator: bearertokenauth/ingest
+      http:
+        endpoint: 127.0.0.1:14320
+        auth:
+          authenticator: bearertokenauth/ingest
+
+  # Unauthenticated, for workloads co-located on this host that have no token to
+  # present. Same loopback binding, so reachability is the access control.
+  otlp/local:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:14321
+        max_recv_msg_size_mib: 8
+      http:
+        endpoint: 127.0.0.1:14322
+
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 30s
+
+  # The gateway scrapes its own Prometheus endpoint and the reverse proxy's
+  # admin endpoint, so its operational metrics travel the same durable, queued
+  # path as customer telemetry instead of needing a second delivery mechanism.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otel-gateway
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 127.0.0.1:8889
+        - job_name: caddy
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 127.0.0.1:2019
+
+processors:
+  # Both blocks below intentionally override the shared base layer. The base is
+  # sized for a workstation sharing its host with a developer's own work; this
+  # box runs nothing else and merges traffic from every edge, so the same values
+  # would throttle it for no reason. Every key the base sets is restated,
+  # because map keys merge — an omitted key would silently keep the edge value.
+  #
+  # `redaction/secrets` is deliberately NOT restated here: it comes from the
+  # base layer verbatim, which is the whole point of that layer existing.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    send_batch_size: 8192
+    send_batch_max_size: 8192
+    timeout: 5s
+
+exporters:
+  # `otlp_grpc`, not `otlp`: plain `otlp` is the deprecated alias in v0.156.0.
+  otlp_grpc/signoz:
+    endpoint: 127.0.0.1:14317
+    tls:
+      # Loopback to a container on this same host — the traffic never leaves the
+      # kernel, and the backend presents no certificate to verify. This is not a
+      # precedent for the edge→gateway leg, which crosses the public internet
+      # and must keep verification on.
+      insecure: true
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/signoz
+      # Byte-sized, matching the storage cap it is protecting. An item-sized
+      # queue cannot match it: it blocks at a fixed item count whatever the
+      # items weigh, so a burst of small spans blocks on a nearly empty disk
+      # while a burst of fat log bodies reaches bbolt's file limit long before
+      # the count. 9 GiB sits deliberately below the 10 GiB file cap so the
+      # logical limit is always reached first and overflow is handled by the
+      # exporter's own policy rather than by a storage write failure.
+      sizer: bytes
+      queue_size: 9663676416
+      # Kept on. Splitting the two backends across separate pipelines would NOT
+      # decouple them: fan-out in the collector is sequential on the caller's
+      # goroutine (`internal/fanoutconsumer`), so a blocked enqueue on one
+      # exporter stalls every consumer queued behind it regardless of how the
+      # pipelines are drawn. The chosen policy is therefore to size the queues
+      # so that reaching overflow is an incident, and to alert on
+      # `otelcol_exporter_queue_size` well before it happens.
+      block_on_overflow: true
+      # Left byte-sized and unchanged: this governs the payload handed to the
+      # backend, which is a property of the backend, not of the disk budget.
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: 3145728
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      # No deadline: the WAL exists so a backend outage is survived rather than
+      # timed out. Overflow, not expiry, is the intended loss mechanism.
+      max_elapsed_time: 0s
+
+  otlp_grpc/clickstack:
+    endpoint: 127.0.0.1:24317
+    headers:
+      authorization: ${env:CLICKSTACK_INGESTION_API_KEY}
+    tls:
+      # Loopback to a co-located container; see otlp_grpc/signoz.
+      insecure: true
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/clickstack
+      # See otlp_grpc/signoz: byte-sized to match the storage cap, 9 GiB kept
+      # under the 10 GiB bbolt file limit so the queue's own limit binds first.
+      sizer: bytes
+      queue_size: 9663676416
+      # See otlp_grpc/signoz: separate pipelines would not decouple the two
+      # backends, because fan-out is sequential on the caller's goroutine.
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: 3145728
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+service:
+  extensions:
+    - bearertokenauth/ingest
+    - file_storage/signoz
+    - file_storage/clickstack
+  telemetry:
+    metrics:
+      # `detailed` rather than the base layer's `normal`: per-queue and
+      # per-exporter series are what the overflow alerting above is built on,
+      # and this host has the headroom to carry the extra cardinality.
+      level: detailed
+      # Overrides the base layer's port 8888, which is taken on this host.
+      # `readers` is a list, so this entry replaces the base entry outright
+      # instead of adding a second scrape endpoint.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8889
+  pipelines:
+    # `redaction/secrets` runs on every pipeline, after memory_limiter and
+    # before batch. It is not enough that the edges redact: otlp/local accepts
+    # telemetry from workloads on this host that never passed through an edge,
+    # and the reverse proxy's own traces reach otlp/local directly. Redacting
+    # here makes the guarantee a property of the gateway rather than a property
+    # of every producer remembering to be well behaved.
+    traces:
+      receivers: [otlp/public, otlp/local]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+    metrics:
+      receivers: [otlp/public, otlp/local]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+    logs:
+      receivers: [otlp/public, otlp/local]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+    # Self-telemetry takes the same processors as everything else: scrape
+    # targets and container labels are attributes too, and a credential in one
+    # of them would otherwise reach the backends unredacted.
+    metrics/self:
+      receivers: [prometheus/self, docker_stats]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]

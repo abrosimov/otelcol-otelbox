@@ -3,10 +3,20 @@
 # .github/workflows/otelcol-otelbox.yml; deployment lives in the consuming
 # repositories, not here.
 #
-# dist.version is the only source of truth: bump it, merge to master, CI
-# publishes the matching `otelcol-otelbox-v<version>` release. No hand-cut tags.
-# Scheme `<upstream>-custom-<n>`: upstream tracks the gomod versions below,
-# `-custom-<n>` increments when the component set changes at the same upstream.
+# dist.version is this artefact's own semantic version and the only source of
+# truth for a release: bump it, merge to master, CI publishes the matching
+# `v<version>` release. No hand-cut tags. What each component means, given that
+# a release carries the shared configuration layer as well as the binary:
+#   major — a consuming repository has to change its role configuration, because
+#           config/ changed shape under it;
+#   minor — a new component is linked, or the base layer grew something a role
+#           layer may use without being obliged to;
+#   patch — a rebuild over the same component set and the same base layer.
+#
+# The upstream collector version is deliberately absent from this number. It
+# lives in the gomod pins below and nowhere else: carried here it could only be
+# a pre-release suffix, which sorts every build of ours below the upstream
+# release it is built on, and it says nothing about what changed here anyway.
 #
 # Linked is not enabled — a component here is available to the config and costs
 # binary size only. Most of the list is dormant until a role config wires it.
@@ -17,12 +27,16 @@ dist:
     every outbound leg, in both the workstation edge and server gateway roles.
   output_path: ./_build
   # Unquoted: CI reads this with awk, not YAML, and would keep the quotes.
-  version: 0.156.0-custom-2
+  version: 1.0.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.156.0
   # Backlog replay — reads JSON only, so the backlog cannot be proto or zstd.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.156.0
+  # The gateway role scrapes its own Prometheus endpoint and the reverse proxy's
+  # admin endpoint through this, so its own operational metrics travel the same
+  # authenticated path as everything else.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filestatsreceiver v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/httpcheckreceiver v0.156.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/tcpcheckreceiver v0.156.0

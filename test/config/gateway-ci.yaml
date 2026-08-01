@@ -1,0 +1,94 @@
+# otelbox — GATEWAY ROLE, CI OVERLAY. Loaded THIRD, only by
+# test/integration-test.sh:
+#
+#   otelcol-otelbox --config config/base.yaml \
+#                   --config config/examples/gateway.yaml \
+#                   --config test/config/gateway-ci.yaml
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ CI ONLY. NEVER COPY ANY PART OF THIS FILE INTO A DEPLOYMENT.              │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Two things this overlay must do, and nothing else.
+#
+# 1. Move the listeners into the 34xxx block, away from the 14317-14322 the
+#    real gateway occupies.
+# 2. Replace the terminal backends with a sink the test can read. SigNoz and
+#    ClickStack do not exist in CI, and standing them up would test them rather
+#    than the collector. `file` writes OTLP JSON to a path the test greps.
+#
+# What it deliberately does NOT touch: `bearertokenauth/ingest` and its
+# allowlist file, `redaction/secrets`, `memory_limiter`, `batch`, and the
+# processor order in every pipeline. Those are the subject of the assertions —
+# retuning them for CI would leave the test proving something no server runs.
+#
+# Environment, supplied by the test exactly as the supervisor supplies it on the
+# server: OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
+# CLICKSTACK_INGESTION_API_KEY (unused here, but the role layer below expands it
+# at load time, so it must be set), plus OTELBOX_CI_SINK for the sink path.
+
+exporters:
+  # The terminal sink. `append: false` (the default) truncates on start, so a
+  # rerun cannot pass on a marker left by the previous one.
+  file/sink:
+    path: ${env:OTELBOX_CI_SINK}
+    format: json
+    # Below the 1s default: the test polls this file, and the flush interval is
+    # dead time added to every bounded wait.
+    flush_interval: 200ms
+
+receivers:
+  otlp/public:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:34327
+      http:
+        endpoint: 127.0.0.1:34328
+  otlp/local:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:34331
+      http:
+        endpoint: 127.0.0.1:34332
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 34889
+  pipelines:
+    # Every pipeline is restated because `receivers`/`exporters` are lists and a
+    # list replaces rather than merges — naming only the exporters would leave
+    # otlp_grpc/signoz and otlp_grpc/clickstack attached and every export would
+    # fail against a backend that is not there.
+    #
+    # `processors` is restated identically to the role layer on purpose. It
+    # looks redundant and is not: it is the line a reviewer checks when asking
+    # whether the test still runs redaction, and a drift between this list and
+    # the role layer's is exactly the kind of thing that should be visible.
+    traces:
+      receivers: [otlp/public]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [file/sink]
+    metrics:
+      receivers: [otlp/public]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [file/sink]
+    logs:
+      receivers: [otlp/public]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [file/sink]
+    # `metrics/self` cannot be deleted — confmap merges maps and has no way to
+    # remove a key — so it is repointed instead. Left as it is, `docker_stats`
+    # would try to open /var/run/docker.sock and fail the collector's startup on
+    # a runner with no Docker socket, and `prometheus/self` would scrape a Caddy
+    # admin endpoint that does not exist. Repointed at otlp/local both go unused
+    # and are never started.
+    metrics/self:
+      receivers: [otlp/local]
+      processors: [memory_limiter, redaction/secrets, batch]
+      exporters: [file/sink]
