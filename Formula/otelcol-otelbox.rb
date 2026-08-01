@@ -52,7 +52,7 @@ class OtelcolOtelbox < Formula
   # Homebrew installs a formula with no `sha256` at all after only a warning.
   # This value is rejected outright, so the failure is loud and self-describing.
   # CI replaces it with the digest of the asset it actually published.
-  sha256 "PENDING-FIRST-CI-PUBLISH-no-release-exists-for-this-version-yet"
+  sha256 "8d47ab5ae69ab19fc8d8db2711424d5675267479d0759a0ef42db6306e629e8f"
 
   # The release ships one binary per target and this formula wants only the
   # macOS one, so the platform is a hard requirement rather than a conditional
@@ -66,7 +66,7 @@ class OtelcolOtelbox < Formula
   # this formula at some unrelated later date. A release asset is immutable.
   resource "config" do
     url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v1.0.0/otelcol-otelbox_config.tar.gz"
-    sha256 "PENDING-FIRST-CI-PUBLISH-no-release-exists-for-this-version-yet"
+    sha256 "24c26833e7f9ba64f2998920cfcb839fde0d437884b6d19f800a86d7d46eb452"
   end
 
   def install
