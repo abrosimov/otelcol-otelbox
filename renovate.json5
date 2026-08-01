@@ -1,0 +1,117 @@
+// Renovate repository configuration for otelcol-otelbox: keeps the workflow's
+// actions, the Alpine base image supplying the trust store, and the upstream
+// collector pins in builder.yaml current. Runtime concerns (host, token,
+// schedule, onboarding) live in the self-hosted configuration, not here.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  extends: [
+    'config:recommended',
+
+    // Keeps every workflow action pinned to a commit SHA with the release tag
+    // in a trailing comment, including actions added later at a bare tag.
+    'helpers:pinGitHubActionDigests',
+  ],
+
+  // Every update here changes what is compiled into a published binary or what
+  // the published image trusts, and only a human reading the smoke check and
+  // the edge -> gateway integration test can confirm delivery still works.
+  automerge: false,
+
+  // `minimumReleaseAge` alone only attaches a pending status check;
+  // `internalChecksFilter: 'strict'` is what actually suppresses the branch and
+  // pull request. It matches the default, but is set explicitly because a
+  // self-hosted global configuration can override that default for every
+  // repository it manages.
+  minimumReleaseAge: '7 days',
+  internalChecksFilter: 'strict',
+
+  // Hold an update when the datasource returns no release timestamp, so the
+  // ageing requirement cannot be bypassed. All datasources in use do carry
+  // timestamps today, so this is a backstop.
+  minimumReleaseAgeBehaviour: 'timestamp-required',
+
+  customManagers: [
+    {
+      // The collector pins, which Dependabot cannot see at all — it has no
+      // manager for an OCB manifest.
+      //
+      // The pattern is modelled on the `resolve` job's own grep in
+      // .github/workflows/otelcol-otelbox.yml, not on YAML, so both agree on
+      // exactly which lines must move together. `dist.version` is this
+      // artefact's own version and is out of reach twice over: no `gomod:` key,
+      // and no `v` prefix.
+      //
+      // The leading `\n` rather than `(?m)^`: JavaScript RegExp rejects inline
+      // flag groups, so the pattern would throw outside the official image.
+      customType: 'regex',
+      managerFilePatterns: ['/^builder\\.yaml$/'],
+      matchStrings: [
+        '\\n[ \\t]*-[ \\t]*gomod:[ \\t]+(?<depName>\\S+)[ \\t]+(?<currentValue>v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?)',
+      ],
+      datasourceTemplate: 'go',
+      versioningTemplate: 'semver',
+      // The handle the grouping rule below matches on; both custom managers
+      // carry it, which is what puts the manifest and the README in one branch.
+      depTypeTemplate: 'otelcol-upstream',
+    },
+
+    {
+      // The README's `go install` line names the OCB version literally, and OCB
+      // must match the core modules it compiles, so it rides in the same pull
+      // request as the pins — which also buys it CI, since a README-only pull
+      // request is excluded by the workflow's path filters.
+      //
+      // `cmd/builder` is a distinct module resolved independently: if upstream
+      // ever tags it apart from the components, the README will lag the pins by
+      // a release. Accepted, because the lag is visible in the diff.
+      //
+      // Only the `go install` line is claimed; the README's prose mentions of
+      // the version are left alone, as a pattern loose enough to catch prose
+      // will eventually rewrite a sentence into nonsense.
+      customType: 'regex',
+      managerFilePatterns: ['/^README\\.md$/'],
+      matchStrings: [
+        'go install (?<depName>go\\.opentelemetry\\.io/collector/cmd/builder)@(?<currentValue>v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?)',
+      ],
+      datasourceTemplate: 'go',
+      versioningTemplate: 'semver',
+      depTypeTemplate: 'otelcol-upstream',
+    },
+  ],
+
+  packageRules: [
+    {
+      // Grouping is a correctness requirement, not tidiness: the `resolve` job
+      // fails any pull request in which a `- gomod:` pin disagrees with the
+      // otlpreceiver pin, so ungrouped updates would be 42 pull requests that
+      // all fail. Core, contrib and the README's OCB line come from one
+      // upstream release train and must name one version.
+      //
+      // `separateMajorMinor: false` for the same reason: a release that is major
+      // for one module and minor for another would otherwise split into two
+      // branches, each moving part of the manifest and failing that check.
+      matchDepTypes: ['otelcol-upstream'],
+      groupName: 'OpenTelemetry Collector upstream pins',
+      groupSlug: 'otelcol-upstream',
+      separateMajorMinor: false,
+      // Read before merging, every time: the smoke check counts linked
+      // components per kind against the manifest, and the integration test is
+      // the only thing here that proves delivery rather than liveness.
+      addLabels: ['upstream-collector'],
+    },
+
+    {
+      // `alpine` is in the Dockerfile only to supply the Mozilla trust store
+      // copied into a `scratch` image, and the gateway verifies every backend
+      // it dials, so a stale bundle decides which backends are reachable.
+      //
+      // Digest pinning is deliberately left off (`pinDigests` default false):
+      // a digest would hide which Alpine release the trust store came from, and
+      // the explicit patch tag already prevents a silent swap.
+      matchManagers: ['dockerfile'],
+      matchPackageNames: ['alpine'],
+      addLabels: ['trust-store'],
+    },
+  ],
+}

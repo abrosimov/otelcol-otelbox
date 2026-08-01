@@ -486,6 +486,11 @@ jobs:
       contents: write # gh release create
     env:
       GH_TOKEN: ${{ github.token }}
+      # This job never checks the repository out — it assembles a release from
+      # artefacts other jobs built. Without a working tree `gh` has no git
+      # remote to infer the target repository from and refuses to run, so name
+      # it explicitly rather than cloning a source tree nothing here reads.
+      GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.resolve.outputs.version }}
       UPSTREAM_VERSION: ${{ needs.resolve.outputs.upstream_version }}
       IMAGE: ${{ needs.resolve.outputs.image }}
