@@ -342,8 +342,12 @@ detector only runs when the pipeline starts.
 - `remote_server_setup` has adopted the artefact — GHCR image pinned by digest,
   both config layers, `files/base.yaml` copied from `config/base.yaml` — but the
   changes are **not committed** there yet.
-- `devbox-setup` is untouched: it still builds and installs its own edge
-  collector from `otelcol-edge/builder.yaml`.
+- `devbox-setup` has adopted the edge profile — all staged, ready to commit.
+  It downloads the pinned `otelcol-otelbox` release asset (v1.0.0), deploys both
+  config layers (base vendored, edge as the role layer), and supervises via
+  `launchd`. The old `otelcol-edge/builder.yaml` and CI workflow are deleted;
+  the `otlp` → `otlp_grpc` and `resourcedetection` → `resource_detection`
+  renames are applied; migration logic handles machines off the old layout.
 - The edge authentication incident above was never diagnosed on the server side.
   The gateway's token-file format is not the cause — upstream parses that file
   line by line and treats text after the first whitespace as a comment, which is
@@ -354,12 +358,11 @@ detector only runs when the pipeline starts.
 
 ## Still outstanding
 
-The remaining work is entirely on the consuming side; `remote_server_setup` is
-done (see "Known state"), leaving:
+Work remaining:
 
-- `devbox-setup` adopts the edge profile — where the `otlp` → `otlp_grpc` and
-  `resourcedetection` → `resource_detection` renames land — and stops building a
-  collector of its own, pinning a release of this repository instead.
+- `devbox-setup`: commit the staged adoption of the edge profile (ready now).
+- `remote_server_setup`: commit the adopted gateway profile (GHCR image pinned,
+  both config layers, release asset fetch + verification).
 
 A design note worth keeping while doing either: gateway queues keep
 `block_on_overflow: true` on every exporter, and splitting backends across
