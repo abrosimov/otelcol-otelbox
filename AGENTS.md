@@ -13,8 +13,11 @@ those live in the consuming repositories (`devbox-setup` for the edge,
 `remote_server_setup` for the gateway), and so do the authoritative role
 configurations.
 
-There is **no Go source**. The component set is declarative; the binary is
-produced by the OpenTelemetry Collector Builder from `builder.yaml`.
+The artefact itself has **no Go source**: the component set is declarative, and
+the binary is produced by the OpenTelemetry Collector Builder from
+`builder.yaml`. The only Go code in the repository is `test/harness/`, a
+stdlib-only module that drives the built binary from the outside — it proves
+the artefact, it is not part of it.
 
 ### Names
 
@@ -37,8 +40,10 @@ is correct as written.
 | `builder.yaml` | OCB manifest. `dist.version` is the single source of truth for this artefact's own version; the `gomod` pins are the only record of the upstream one. |
 | `config/base.yaml` | Shared base layer: processors both roles run, plus self-telemetry. Not runnable alone. |
 | `config/examples/{edge,gateway}.yaml` | Reference role profiles. Mirrors of the deployed copies; CI validates them against the base layer. |
-| `test/integration-test.sh` | End-to-end edge → authenticated gateway → sink test. |
-| `test/config/{edge,gateway}-ci.yaml` | CI-only third layer: 34xxx ports, a `file` sink in place of the backends, and — edge only — TLS off on a hop that never leaves the kernel. |
+| `test/harness/` | Go test harness (stdlib-only, own module) that drives the binary under test: end-to-end edge → authenticated gateway → sink delivery, and a gateway backend-coupling scenario under queue pressure. |
+| `test/config/{edge,gateway}-ci.yaml` | CI-only third layer for the delivery test: 34xxx ports, a `file` sink in place of the backends, and — edge only — TLS off on a hop that never leaves the kernel. |
+| `test/config/gateway-coupling-ci.yaml` | CI-only third layer for the coupling test: keeps both real backend exporters, `block_on_overflow` and both WALs; moves only ports, `queue_size` and `batch.timeout`. |
+| `test/config/backend-ci.yaml` | A stoppable backend double for the coupling test — OTLP gRPC in, `file` out. Not a role layer; never composed with `config/base.yaml`. |
 | `smoke-check.sh` | Per-kind component counts, manifest vs built binary, plus two named assertions. |
 | `Dockerfile` | Packages the CI-built `linux/amd64` binary into `scratch`. Never compiles. |
 | `Formula/otelcol-otelbox.rb` | Homebrew formula. **Rewritten by CI**, see below. |
@@ -69,8 +74,8 @@ arguments:
 otelcol-otelbox --config config/base.yaml --config <exactly-one-role>.yaml
 ```
 
-`test/integration-test.sh` adds a third, CI-only overlay. Nothing else does, and
-nothing outside `test/` should.
+`test/harness` adds a third, CI-only overlay through the `test/config/*-ci.yaml`
+files it composes. Nothing else does, and nothing outside `test/` should.
 
 **Merge semantics, and they are load-bearing.** Later `--config` arguments win.
 Map keys merge key by key; a list value **replaces** the earlier list wholesale.
@@ -260,41 +265,57 @@ is dormant until a pipeline references it, which needs no rebuild.
 Its blind spot is why the next section exists: it proves the binary contains
 components, not that anything reaches the far end.
 
-### test/integration-test.sh
+### test/harness
 
 ```bash
-./test/integration-test.sh ./_build/otelcol-otelbox
+go test -C test/harness . -count=1 -timeout 15m -v \
+    -args -otelcol-binary "$PWD/_build/otelcol-otelbox"
 ```
 
-Stands up two processes of the binary in the two roles it serves, wired over
-loopback with the same authenticated hop the deployment uses, and asserts on
-what came out of the far end: delivery, redaction, and — the one that matters —
-that an edge holding a token outside the gateway's allowlist both drops the data
-and makes the drop visible in `otelcol_exporter_send_failed_*`. A precondition
-checks that unauthenticated ingest gets HTTP 401, so that assertion cannot pass
-vacuously.
+Two tests. `TestEdgeToGatewayDelivery` stands up two processes of the binary in
+the two roles it serves, wired over loopback with the same authenticated hop the
+deployment uses, and asserts on what came out of the far end: delivery,
+redaction, and — the one that matters — that an edge holding a token outside the
+gateway's allowlist both drops the data and makes the drop visible in
+`otelcol_exporter_send_failed_*`. A precondition checks that unauthenticated
+ingest gets HTTP 401, so that assertion cannot pass vacuously.
 
-**The incident it exists for.** The deployed edge failed every export for days
-with `Unauthenticated ... provided authorization does not match expected scheme
-or token`, and nothing caught it: the process ran, launchd reported it alive,
-the health endpoint answered 200, the OTLP receiver accepted everything sent to
-it. Every one of those proves the local half of the pipeline and none proves
-delivery, so a wrong credential looked exactly like a healthy collector and the
-telemetry was simply gone. **Anyone changing the authentication path — the
-`bearertokenauth` extension, the token file format, the edge's `authorization`
-header, the receiver's `auth:` blocks — should know this test is the thing
-standing between them and a repeat.** Do not weaken it into a startup check.
+`TestBackendCouplingUnderQueuePressure` settles, on a live run rather than by
+reading source, the claim the "Still outstanding" design note below makes and a
+runbook in `remote_server_setup` makes in the opposite direction: with queue
+headroom a stopped gateway backend leaves the healthy one untouched; once its
+queue fills, `block_on_overflow: true` plus synchronous fan-out
+(`internal/fanoutconsumer`) stalls the healthy backend too. A third subtest
+confirms the withheld record arrives once the stopped backend returns — the same
+non-vacuity role HTTP 401 plays for the token assertion above.
 
-Reading it before editing it repays the time: `set -e` is deliberately absent
-(half the control flow is a probe expected to fail), there are no fixed sleeps,
-every wait is a bounded poll that also watches the collector PID, and the token
-file's trailing comment is a format assertion rather than decoration.
+**The incident `TestEdgeToGatewayDelivery` exists for.** The deployed edge
+failed every export for days with `Unauthenticated ... provided authorization
+does not match expected scheme or token`, and nothing caught it: the process
+ran, launchd reported it alive, the health endpoint answered 200, the OTLP
+receiver accepted everything sent to it. Every one of those proves the local
+half of the pipeline and none proves delivery, so a wrong credential looked
+exactly like a healthy collector and the telemetry was simply gone. **Anyone
+changing the authentication path — the `bearertokenauth` extension, the token
+file format, the edge's `authorization` header, the receiver's `auth:` blocks —
+should know this test is the thing standing between them and a repeat.** Do not
+weaken it into a startup check.
+
+Reading it before editing it repays the time: each assertion is a subtest, so
+one failing does not abort the others — half the value of a failure is what the
+*other* assertions did. There are no fixed sleeps; every wait is a bounded poll
+that also watches the collector process, so one that dies on a config error is
+reported in a second with its last log lines rather than after the full
+timeout. The token file's trailing comment is a format assertion rather than
+decoration.
 
 ### The sandbox trap
 
-**The integration test cannot run under this environment's default command
-sandbox.** The `resource_detection` processor's `system` detector is denied the
-boot-time `sysctl`, so the edge process dies at startup with
+**`TestEdgeToGatewayDelivery` cannot run under this environment's default
+command sandbox** — `TestBackendCouplingUnderQueuePressure` uses no
+`resource_detection` and runs under it fine. The edge's `resource_detection`
+processor's `system` detector is denied the boot-time `sysctl`, so the edge
+process dies at startup with
 
 ```
 Error: cannot start pipelines: failed to start "resource_detection" processor:
@@ -303,9 +324,9 @@ time: operation not permitted
 ```
 
 which reads like a configuration fault and is not one. Nothing in `config/` is
-wrong when this happens. Run the test outside the sandbox; CI runners are
-unaffected. `validate` and `smoke-check.sh` are fine inside it — the detector
-only runs when the pipeline starts.
+wrong when this happens. Run the delivery test outside the sandbox; CI runners
+are unaffected. `validate` and `smoke-check.sh` are fine inside it — the
+detector only runs when the pipeline starts.
 
 ## Known state
 
@@ -348,6 +369,9 @@ pipelines would **not** decouple them. Fan-out in the collector is synchronous
 on the caller's goroutine (`internal/fanoutconsumer`), so a blocked enqueue on
 one exporter stalls everything queued behind it regardless of how the pipelines
 are drawn. The only real knobs are the overflow policy and queue sizing.
+`TestBackendCouplingUnderQueuePressure` (see Verification, above) proves this on
+a live run rather than leaving it as an assertion about source — and settles it
+against a `remote_server_setup` runbook that claims the opposite.
 
 ## Conventions
 
@@ -358,10 +382,14 @@ are drawn. The only real knobs are the overflow policy and queue sizing.
   regression.
 - `dist.version` in `builder.yaml` is deliberately **unquoted**: CI reads it with
   `awk`, not a YAML parser, and would otherwise keep the quotes.
-- Ports: the workstation edge holds 4317/4318/13133/8888, the server gateway
-  holds 14317–14322/8888/8889, and everything in `test/` sits in a 34xxx block
+- Ports: the workstation edge holds 4317/4318/13133/8888; the server gateway
+  holds 14319–14322 and 8889, and everything in `test/` sits in a 34xxx block
   chosen to miss both — so a developer running their own edge can still run the
-  test.
+  test. Held means *listened on*, which is the distinction the reserved range
+  14317–14322 blurs: 14317 and 24317 are the backends' own OTLP ports, dialled
+  outbound by `otlp_grpc/signoz` and `otlp_grpc/clickstack`, and the containers
+  binding them belong to `remote_server_setup`. The gateway takes 8889 rather
+  than 8888 precisely because 8888 is already taken on that host.
 - The one `insecure: true` on the edge→gateway leg lives in
   `test/config/edge-ci.yaml`, fenced in by a comment there. Every configuration
   on a leg that leaves the host keeps verification on. Do not copy that line

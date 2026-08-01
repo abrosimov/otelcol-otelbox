@@ -1,4 +1,5 @@
-# otelbox — EDGE ROLE, CI OVERLAY. Loaded THIRD, only by test/integration-test.sh:
+# otelbox — EDGE ROLE, CI OVERLAY. Loaded THIRD, only by test/harness
+# (TestEdgeToGatewayDelivery):
 #
 #   otelcol-otelbox --config config/base.yaml \
 #                   --config config/examples/edge.yaml \

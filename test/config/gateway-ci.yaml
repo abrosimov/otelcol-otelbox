@@ -1,5 +1,5 @@
-# otelbox — GATEWAY ROLE, CI OVERLAY. Loaded THIRD, only by
-# test/integration-test.sh:
+# otelbox — GATEWAY ROLE, CI OVERLAY. Loaded THIRD, only by test/harness
+# (TestEdgeToGatewayDelivery):
 #
 #   otelcol-otelbox --config config/base.yaml \
 #                   --config config/examples/gateway.yaml \
@@ -16,6 +16,10 @@
 # 2. Replace the terminal backends with a sink the test can read. SigNoz and
 #    ClickStack do not exist in CI, and standing them up would test them rather
 #    than the collector. `file` writes OTLP JSON to a path the test greps.
+#
+# A `file` sink cannot be stopped, and a queue that always drains cannot
+# overflow, which is why the backend-coupling scenario has an overlay of its
+# own: test/config/gateway-coupling-ci.yaml.
 #
 # What it deliberately does NOT touch: `bearertokenauth/ingest` and its
 # allowlist file, `redaction/secrets`, `memory_limiter`, `batch`, and the

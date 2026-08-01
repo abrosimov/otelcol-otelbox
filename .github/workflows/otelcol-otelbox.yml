@@ -23,7 +23,7 @@ name: otelcol-otelbox
 #
 # The release-existence check gates publishing and nothing else, and must not be
 # allowed to gate more. Hang the whole graph off it and a change to
-# config/base.yaml or to test/integration-test.sh goes unbuilt and untested
+# config/base.yaml or to the test harness goes unbuilt and untested
 # whenever the version it belongs to is already released — CI then reports green
 # on code it has never compiled. Idempotence is kept where it belongs: an
 # existing release is never re-published or overwritten. To re-publish a
@@ -381,6 +381,15 @@ jobs:
         # See validate-config: artefact downloads come back without the mode.
         run: chmod +x otelcol-otelbox_linux_amd64
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          # The harness is stdlib-only and therefore has no go.sum. With caching
+          # left on, setup-go looks for a dependency file to key the cache on,
+          # finds none, and fails the step before a single test runs.
+          cache: false
+
       - name: Run the end-to-end pipeline test
         # THE TRAP THIS STEP EXISTS FOR. The deployed edge failed every export
         # for days while every local signal stayed green: the process ran, the
@@ -392,15 +401,26 @@ jobs:
         # spot by construction — it proves the binary contains components, not
         # that anything reaches the far end.
         #
-        # This script stands the real thing up: two processes of this binary in
-        # the two roles it serves, wired over loopback with the same
-        # authenticated hop the deployment uses, asserting on what came out of
-        # the far end. It needs the repository checked out — it resolves
-        # config/base.yaml and the role profiles relative to its own location —
-        # plus curl and od, both present on the runner. Its own bounded polls
-        # cap a failing run at roughly four minutes; the job timeout above is
-        # only a backstop.
-        run: ./test/integration-test.sh ./otelcol-otelbox_linux_amd64
+        # The harness stands the real thing up: processes of this binary in the
+        # roles it serves, wired over loopback with the same authenticated hop
+        # the deployment uses, asserting on what came out of the far end — plus
+        # a second scenario proving that two gateway backends stall together
+        # once one queue is full. It needs the repository checked out, because
+        # it resolves config/base.yaml and the role profiles relative to its own
+        # package directory, and nothing else: no module downloads, no runner
+        # packages.
+        #
+        # `-args` rather than a bare flag so the go command hands
+        # -otelcol-binary to the test binary verbatim; the path must be absolute
+        # because the tests run in their own package directory. `-count=1`
+        # because a cached PASS would be a green tick for a binary this run
+        # never touched. Its own bounded polls cap a failing run at roughly five
+        # minutes, well inside -timeout; the job timeout above is the backstop
+        # for a hang that escapes both.
+        working-directory: test/harness
+        run: |
+          go test . -count=1 -v -timeout 15m \
+            -args -otelcol-binary "${GITHUB_WORKSPACE}/otelcol-otelbox_linux_amd64"
 
   image:
     name: Container image (GHCR)

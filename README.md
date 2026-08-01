@@ -25,16 +25,18 @@ not the deployment:
 | `config/base.yaml` | Shared base configuration layer: the processors both roles run, plus the collector's own telemetry. Never a runnable configuration on its own. |
 | `config/examples/edge.yaml` | Reference edge profile. Validated by CI; the deployed copy lives in `devbox-setup`. |
 | `config/examples/gateway.yaml` | Reference gateway profile. Validated by CI; the deployed copy lives in `remote_server_setup` (`roles/otel_gateway/files/config.yaml`). |
-| `test/integration-test.sh` | End-to-end edge → authenticated gateway → sink test. |
-| `test/config/*-ci.yaml` | CI-only overlays for that test: ports in the 34xxx block, and a file sink in place of the real backends. |
+| `test/harness/` | Go test harness (stdlib-only, own module): end-to-end edge → authenticated gateway → sink delivery, plus a gateway backend-coupling scenario under queue pressure. |
+| `test/config/*-ci.yaml` | CI-only overlays for the harness: ports in the 34xxx block, a file sink in place of the real backends, and — for the coupling scenario — a stoppable backend double. |
 | `smoke-check.sh` | Post-build check: per-kind component counts vs the built binary. |
 | `Dockerfile` | Packages the CI-built `linux/amd64` binary into a `scratch` image. It never compiles. |
 | `.dockerignore` | Whitelists exactly the one binary the image needs. |
 | `Formula/otelcol-otelbox.rb` | Homebrew formula for the macOS artefact. Rewritten by CI after each release. |
 | `.github/workflows/otelcol-otelbox.yml` | Build both targets, validate, integration-test, publish the image, the release and the formula. |
 
-There is no Go source here — the component set is declarative, and the binary is
-produced by the OpenTelemetry Collector Builder.
+The artefact itself has no Go source — the component set is declarative, and the
+binary is produced by the OpenTelemetry Collector Builder. The one exception is
+`test/harness/`, a stdlib-only module that drives the built binary from the
+outside; it proves the artefact rather than being part of it.
 
 Deployment still lives in the consuming repositories: `devbox-setup` supervises
 the edge role through launchd, and `remote_server_setup` supervises the gateway
@@ -127,12 +129,13 @@ OTELBOX_EDGE_TOKEN=placeholder \
     --config config/base.yaml --config config/examples/edge.yaml
 ```
 
-## The integration test
+## The test harness
 
-`test/integration-test.sh` stands up two processes of the binary under test, in
-the two roles it serves, wired to each other over loopback with the same
-authenticated hop the deployment uses, and asserts on what came out of the far
-end:
+`test/harness` stands up processes of the binary under test, wired to each
+other over loopback with the same authenticated hop the deployment uses, and
+asserts on what came out of the far end. Two tests:
+
+`TestEdgeToGatewayDelivery`, the edge → gateway pipeline:
 
 1. a log posted to the edge reaches the gateway's sink;
 2. credential-shaped attribute values are stripped before the sink, while the
@@ -151,19 +154,28 @@ them prove delivery, so a wrong ingestion token looked exactly like a healthy
 collector and the telemetry was simply gone. If you are changing anything on the
 authentication path, this test is what stands between you and a repeat.
 
-It needs `curl` and `od`, a repository checkout (it resolves `config/base.yaml`
-and the role profiles relative to its own location), and the ports in the 34xxx
-block, which are chosen to miss a running edge or gateway:
+`TestBackendCouplingUnderQueuePressure`, a gateway with two backends: a stopped
+backend with queue headroom leaves the healthy one untouched, but once its queue
+fills, `block_on_overflow: true` plus synchronous fan-out
+(`internal/fanoutconsumer`) stalls the healthy backend too — and clears again
+once the stopped backend returns.
+
+It needs only Go, a repository checkout (it resolves `config/base.yaml` and the
+role profiles relative to its own package directory), and the ports in the
+34xxx block, which are chosen to miss a running edge or gateway:
 
 ```bash
-./test/integration-test.sh ./_build/otelcol-otelbox
+go test -C test/harness . -count=1 -timeout 15m -v \
+    -args -otelcol-binary "$PWD/_build/otelcol-otelbox"
 ```
 
-If it dies within seconds with `failed getting OS version: OSVersion failed to
-get os version: getting boot time: operation not permitted`, it is being run
-under a restricted command sandbox. That reads like a configuration fault and is
-not one: the `resource_detection` processor's `system` detector is being denied
-the boot-time `sysctl`. Run it outside the sandbox. CI runners are unaffected.
+If `TestEdgeToGatewayDelivery` dies within seconds with `failed getting OS
+version: OSVersion failed to get os version: getting boot time: operation not
+permitted`, it is being run under a restricted command sandbox. That reads like
+a configuration fault and is not one: the `resource_detection` processor's
+`system` detector is being denied the boot-time `sysctl`. Run it outside the
+sandbox — CI runners are unaffected, and `TestBackendCouplingUnderQueuePressure`
+uses no `resource_detection` and is unaffected too.
 
 ## Release flow
 
