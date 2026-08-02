@@ -1,0 +1,271 @@
+# otelbox — EDGE ROLE (reference profile, not deployed).
+#
+#   otelcol-otelbox --config config/edge.yaml
+#
+# One file, no layering: a consuming repository renders the ${env:...} values and
+# loads this alone. The block between the SHARED markers below is byte-identical
+# in all three role profiles and CI fails if it is not; edit it in all three or
+# in none.
+#
+# The role: whatever telemetry the user points at this collector arrives over
+# loopback OTLP, gets origin stamped and secrets redacted, and is forwarded to
+# one gateway. Its one additional duty is not losing that data while the gateway
+# is unreachable, which is what the on-disk queue below is for.
+#
+# Environment: OTELBOX_BIND_HOST, OTELBOX_HEALTH_ENDPOINT, OTELBOX_STORAGE_DIR,
+# OTELBOX_STORAGE_MAX_SIZE_BYTES, OTELBOX_QUEUE_SIZE_BYTES,
+# OTELBOX_UPSTREAM_ENDPOINT, OTELBOX_UPSTREAM_AUTH_HEADER_FILE.
+
+extensions:
+  # `healthcheckv2`, not the alpha `health_check`, which is no longer linked. It
+  # reports component lifecycle and says nothing about delivery — a rejected
+  # export sets no component status at all.
+  healthcheckv2:
+    # Required. Without it the extension serves the v1 responder, which answers
+    # 200 on `/` and every path beneath it and ignores the keys below.
+    use_v2: true
+    http:
+      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT}
+      status:
+        enabled: true
+        # v2's default. v1's `/` is not served under it, so a probe has to move
+        # with this rename rather than keep answering.
+        path: /status
+      # Would serve the merged configuration with every ${env:...} expanded,
+      # this role's credential path included. Restated rather than defaulted.
+      config:
+        enabled: false
+    # NO `grpc:` KEY, and the omission is the setting: there is no
+    # `enabled: false` for that responder, and writing the key even bare opens
+    # one on 127.0.0.1:13132.
+    component_health:
+      # Upstream reports a permanent error only for a failed start or shutdown,
+      # so this buys 500 on a broken component and nothing on a broken export.
+      include_permanent_errors: true
+      # Off. `memory_limiter` reports a recoverable status whenever it refuses
+      # data, and a memory spike is not this collector being unhealthy.
+      include_recoverable_errors: false
+
+  # The credential, read from a file rather than an environment variable so that
+  # rotation takes effect without a restart — the file is watched by fsnotify,
+  # while a `${env:...}` header is expanded once at load.
+  #
+  # The file must contain literally `Bearer <token>`: the whole file is
+  # TrimSpace'd and nothing prepends a scheme here, unlike the gateway's
+  # `bearertokenauth` allowlist, which is parsed line by line and does. Two
+  # formats that look alike; neither warns.
+  #
+  # `headers_setter` rather than `bearertokenauth` on this side because the
+  # latter's gRPC credential returns RequireTransportSecurity() true
+  # unconditionally, which would decide for the deployment whether this leg
+  # carries transport security.
+  headers_setter/gateway:
+    headers:
+      - action: upsert
+        key: authorization
+        value_file: ${env:OTELBOX_UPSTREAM_AUTH_HEADER_FILE}
+
+  # The write-ahead log. Anything accepted from a local application is on disk
+  # before it is acknowledged, so an unreachable gateway costs latency instead
+  # of data.
+  #
+  # One bbolt file PER SIGNAL, not one per exporter: the queue names its storage
+  # client after the signal, so this directory holds a traces, a metrics and a
+  # logs file, each capped separately. Budget accordingly.
+  file_storage/gateway:
+    directory: ${env:OTELBOX_STORAGE_DIR}/gateway
+    create_directory: true
+    fsync: true
+    # A disk budget is a property of a machine, which this profile cannot know.
+    #
+    # The default is not decoration, and it is the reference explanation for
+    # every numeric `:-` in all three profiles. An unset variable is NOT a load
+    # error: the provider warns and yields the zero value, and zero here means
+    # an UNLIMITED file. The default turns that into a survivable number.
+    #
+    # Two things it does not do. It covers a variable that is ABSENT, not one
+    # exported as an empty string — that case bypasses the default and lands
+    # back on zero with only an Info line. And supplying a default silences the
+    # "references unset environment variable" warning entirely, so a forgotten
+    # variable now looks like a deliberate one.
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-5368709120}
+    # bbolt never returns freed pages, so without compaction one spike keeps the
+    # disk for good.
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/gateway
+      # Removes a temp copy left behind by a kill mid-compaction, which would
+      # otherwise stay for ever.
+      cleanup_on_start: true
+
+receivers:
+  # These listeners have no authentication, so whoever can reach them can write.
+  # Which address that is belongs to the deployment.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: ${env:OTELBOX_BIND_HOST}:4317
+        # 32 MiB, and it binds the compressed length and the decompressed one
+        # alike, so `compression: gzip` buys no headroom. Matched to the
+        # gateway's own limit so a record this edge accepts is one the gateway
+        # will too.
+        max_recv_msg_size_mib: 32
+      http:
+        endpoint: ${env:OTELBOX_BIND_HOST}:4318
+        # The same 32 MiB in bytes. Stated rather than left to confighttp's
+        # 20 MiB default, which would silently make HTTP the tighter transport.
+        max_request_body_size: 33554432
+
+  # This collector's own metrics, scraped rather than pushed out of
+  # `service::telemetry`: that export path is a separate SDK, so it bypasses
+  # redaction, the queue and the WAL — and the send-failure counters would then
+  # travel with no durability, losing the evidence of the outage they describe.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-otelbox-edge
+          scrape_interval: 30s
+          static_configs:
+            # The same bind host as the endpoint it scrapes, set under
+            # service::telemetry below, so the target follows the listener.
+            - targets:
+                - ${env:OTELBOX_BIND_HOST}:8888
+
+processors:
+  # Origin, and origin is the one thing the roles do not share — running this on
+  # the gateway would restamp relayed telemetry with the server's identity.
+  # `override: false` protects attributes an application set for itself.
+  resource_detection:
+    detectors: [env, system]
+    timeout: 2s
+    override: false
+
+  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+  # Memory is expressed as a percentage rather than a fixed MiB figure because
+  # the same profile may run in a memory-limited container, as a bare host
+  # process or on a workstation, and the percentage resolves against the cgroup
+  # quota where there is one and against system memory where there is not.
+  #
+  # It gates on live Go heap, so it sees neither RSS nor the memory-mapped WAL
+  # above. Refusal is driven by the soft limit alone, which is
+  # (limit − spike); the spike figure is the most the heap may grow inside one
+  # check interval, and it is measurable rather than a rule of thumb.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 50
+    spike_limit_percentage: 10
+
+  # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
+  # drop every attribute nobody enumerated, leaving healthy-looking empty
+  # telemetry. Add patterns in all three profiles or in none.
+  redaction/secrets:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - '(?i).*authorization.*'
+      - '(?i).*api[._-]?key.*'
+      - '(?i).*cookie.*'
+      - '(?i)(^|.*[._-])(access|refresh|auth|secret|bearer)[._-]?token($|[._-].*)'
+      - '(?i).*password.*'
+    blocked_values:
+      - '(?i)Bearer\s+\S+'
+      - '(?i)(sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}'
+
+  # <<< SHARED
+
+exporters:
+  # `otlp_grpc`, not `otlp`: plain `otlp` is the deprecated exporter alias.
+  otlp_grpc/gateway:
+    endpoint: ${env:OTELBOX_UPSTREAM_ENDPOINT}
+    auth:
+      authenticator: headers_setter/gateway
+    tls:
+      # NEVER true. The authenticator above hands a bearer credential to
+      # whatever peer answers, so an unverified peer is simply given it — which
+      # is why the integration test mints a CA per run rather than turning this
+      # off. Not the milder-looking `insecure_skip_verify`, which negotiates TLS
+      # and then validates no certificate at all.
+      insecure: false
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      # Bound to the WAL above, so enqueue means persisted.
+      storage: file_storage/gateway
+      # Bytes, because it is the only unit commensurable with the file cap it
+      # has to stay under; an item count blocks whatever the items weigh. Keep
+      # it below that cap so the overflow policy binds before a storage write
+      # fails, and remember the cap applies per signal file.
+      sizer: bytes
+      # Unset would be zero, which `Validate` rejects outright — the one numeric
+      # reference here that fails loudly. The default keeps it consistent with
+      # the rest anyway.
+      queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}
+      # Backpressure rather than silent loss: this role's producers are OTLP
+      # clients that hold their own data and retry.
+      block_on_overflow: true
+      # A record above max_size is dropped together with the rest of its
+      # request, so keep the invariant: max_size < the gateway's
+      # max_recv_msg_size_mib ≤ its max_request_body_size.
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: 8388608
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      # No deadline. A non-zero value is a data-loss deadline: when it passes the
+      # item is deleted, which is exactly what the disk was bought to prevent.
+      # Overflow, not expiry, is the intended loss mechanism.
+      max_elapsed_time: 0s
+
+service:
+  extensions: [healthcheckv2, headers_setter/gateway, file_storage/gateway]
+  telemetry:
+    # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+    # No `output_paths`: a second writer on the same inode interleaves lines and
+    # follows no rotation.
+    logs:
+      level: info
+      encoding: json
+    # <<< SHARED
+    metrics:
+      # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+      # `detailed`, because `normal` strips `error_type` and `error_permanent`
+      # from otelcol_exporter_send_failed_*, and without those this collector
+      # cannot tell a rejected credential from an unreachable peer — which is
+      # the failure this repository exists to make visible.
+      level: detailed
+      # <<< SHARED
+      # The port is this repository's convention; the address is the
+      # deployment's, so it follows the bind host the receivers use.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: ${env:OTELBOX_BIND_HOST}
+                port: 8888
+  pipelines:
+    # Same shape in all signals: detection must precede redaction so what it
+    # adds is subject to the same patterns, and redaction must be the last thing
+    # that can alter an attribute.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource_detection, redaction/secrets]
+      exporters: [otlp_grpc/gateway]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource_detection, redaction/secrets]
+      exporters: [otlp_grpc/gateway]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource_detection, redaction/secrets]
+      exporters: [otlp_grpc/gateway]
+    # This collector observing itself, on the same processors as everything
+    # else: a scrape target label is an attribute too.
+    metrics/self:
+      receivers: [prometheus/self]
+      processors: [memory_limiter, resource_detection, redaction/secrets]
+      exporters: [otlp_grpc/gateway]

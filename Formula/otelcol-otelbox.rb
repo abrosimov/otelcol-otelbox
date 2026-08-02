@@ -44,11 +44,49 @@ class OtelcolOtelbox < Formula
     chmod 0555, bin/"otelcol-otelbox"
 
     resource("config").stage do
-      (pkgshare/"config").install "base.yaml", "examples"
+      # The structural change lands while this formula still names the last
+      # published 1.x archive; CI rewrites the release literals only after the
+      # 2.0 archive exists. Keep that intermediate checkout installable.
+      if File.exist?("edge.yaml")
+        (pkgshare/"config").install "edge.yaml", "gateway.yaml", "host-agent.yaml"
+      else
+        (pkgshare/"config").install "base.yaml", "examples"
+      end
     end
   end
 
   def caveats
+    config_guidance = if version >= Version.new("2.0.0")
+      <<~EOS
+        There is no shared base layer to compose: each profile is one
+        self-contained file, and a role is run by loading exactly one of them
+        and supplying the OTELBOX_* variables it references.
+
+          otelcol-otelbox validate --config #{opt_pkgshare}/config/edge.yaml
+
+        Every value that names a neighbour, a socket or a disk budget is an
+        ${env:...} reference. Numeric ones carry a default, so forgetting one
+        yields a working but unintended number rather than a failure — check
+        them against the comments in the profile before relying on it.
+
+        A deployed configuration can be diffed against the profile CI validated
+        for this version:
+
+          diff <your-config>.yaml #{opt_pkgshare}/config/edge.yaml
+      EOS
+    else
+      <<~EOS
+        The 1.x archive uses a base layer followed by exactly one role layer:
+
+          otelcol-otelbox validate \
+            --config #{opt_pkgshare}/config/base.yaml \
+            --config #{opt_pkgshare}/config/examples/edge.yaml
+
+        Upgrade the binary and configuration together when moving to 2.0; the
+        two layout contracts are intentionally incompatible.
+      EOS
+    end
+
     <<~EOS
       This formula installs the artefact only. It does not supervise the
       collector and ships no `brew services` definition, on purpose: on a
@@ -69,22 +107,11 @@ class OtelcolOtelbox < Formula
       from its cause. This formula is for machines the playbook does not
       manage, and for use by hand.
 
-      The published configuration layers are installed, unmodified, under
+      The published role profiles are installed, unmodified, under
 
         #{opt_pkgshare}/config
 
-      The shared base layer is never a runnable configuration on its own; it is
-      always composed with exactly one role layer, base first:
-
-        otelcol-otelbox validate \\
-          --config #{opt_pkgshare}/config/base.yaml \\
-          --config <your-role-layer>.yaml
-
-      `config/examples` holds the edge, gateway and host-agent profiles CI
-      validated for this version, so a deployed configuration can be diffed
-      against the profile that was actually proven:
-
-        diff <your-role-layer>.yaml #{opt_pkgshare}/config/examples/edge.yaml
+      #{config_guidance}
     EOS
   end
 
@@ -96,33 +123,47 @@ class OtelcolOtelbox < Formula
     assert_match "name: redaction", components
     assert_match version.to_s, components
 
-    # Composed with the installed base layer exactly as a deployment composes
-    # one, so a base layer that failed to install fails here too. `validate`
-    # parses without starting the collector, so nothing is dialled or bound.
-    (testpath/"role.yaml").write <<~YAML
-      receivers:
-        otlp:
-          protocols:
-            grpc:
-              endpoint: 127.0.0.1:14317
-      extensions:
-        file_storage/formula_test:
-          directory: #{testpath}/wal
-          create_directory: true
-      exporters:
-        file/formula_test:
-          path: #{testpath}/out.json
-      service:
-        extensions: [file_storage/formula_test]
-        pipelines:
-          logs:
-            receivers: [otlp]
-            processors: [memory_limiter, redaction/secrets, batch]
-            exporters: [file/formula_test]
-    YAML
+    edge_profile = pkgshare/"config/edge.yaml"
+    if edge_profile.exist?
+      # The credential file is real: `headers_setter` reads the complete value
+      # and a validation against a missing path would prove less.
+      (testpath/"auth-header").write "Bearer formula-test-placeholder\n"
 
-    system bin/"otelcol-otelbox", "validate",
-           "--config", pkgshare/"config/base.yaml",
-           "--config", testpath/"role.yaml"
+      ENV["OTELBOX_BIND_HOST"] = "127.0.0.1"
+      ENV["OTELBOX_HEALTH_ENDPOINT"] = "127.0.0.1:13133"
+      ENV["OTELBOX_STORAGE_DIR"] = "#{testpath}/state"
+      ENV["OTELBOX_UPSTREAM_ENDPOINT"] = "127.0.0.1:14319"
+      ENV["OTELBOX_UPSTREAM_AUTH_HEADER_FILE"] = "#{testpath}/auth-header"
+
+      system bin/"otelcol-otelbox", "validate", "--config", edge_profile
+    else
+      # Keep the last published 1.x formula testable until CI rewrites its
+      # release literals after the first 2.0 publish.
+      (testpath/"role.yaml").write <<~YAML
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 127.0.0.1:14317
+        extensions:
+          file_storage/formula_test:
+            directory: #{testpath}/wal
+            create_directory: true
+        exporters:
+          file/formula_test:
+            path: #{testpath}/out.json
+        service:
+          extensions: [file_storage/formula_test]
+          pipelines:
+            logs:
+              receivers: [otlp]
+              processors: [memory_limiter, redaction/secrets, batch]
+              exporters: [file/formula_test]
+      YAML
+
+      system bin/"otelcol-otelbox", "validate",
+             "--config", pkgshare/"config/base.yaml",
+             "--config", testpath/"role.yaml"
+    end
   end
 end

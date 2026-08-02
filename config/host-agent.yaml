@@ -1,0 +1,287 @@
+# otelbox — HOST AGENT ROLE (reference profile, not deployed).
+#
+#   otelcol-otelbox --config config/host-agent.yaml
+#
+# One file, no layering: a consuming repository renders the ${env:...} values and
+# loads this alone. The block between the SHARED markers below is byte-identical
+# in all three role profiles and CI fails if it is not; edit it in all three or
+# in none.
+#
+# The role: the same as the edge, but the telemetry is the machine's own rather
+# than an application's. It may run on a workstation, on the machine that runs
+# the gateway, or anywhere else — nothing here depends on which.
+#
+# Environment: OTELBOX_BIND_HOST, OTELBOX_HEALTH_ENDPOINT, OTELBOX_STORAGE_DIR,
+# OTELBOX_STORAGE_MAX_SIZE_BYTES, OTELBOX_QUEUE_SIZE_BYTES,
+# OTELBOX_UPSTREAM_ENDPOINT, OTELBOX_UPSTREAM_AUTH_HEADER_FILE,
+# OTELBOX_DOCKER_ENDPOINT, OTELBOX_SCRAPE_TARGET_1, OTELBOX_SCRAPE_TARGET_2,
+# OTELBOX_JOURNAL_UNIT_1, OTELBOX_JOURNAL_UNIT_2.
+
+extensions:
+  # The same health check the other two roles wire, on the same keys; see
+  # config/edge.yaml for why each one is set.
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT}
+      status:
+        enabled: true
+        path: /status
+      # Would serve the merged configuration with every ${env:...} expanded, the
+      # credential's path among them.
+      config:
+        enabled: false
+    component_health:
+      include_permanent_errors: true
+      include_recoverable_errors: false
+
+  # The same mechanism and the same file format the edge uses, so a machine
+  # running both may point them at one file and share a token. The file must
+  # contain literally `Bearer <token>`: the whole file is TrimSpace'd and nothing
+  # prepends a scheme, unlike the gateway's allowlist, which is parsed line by
+  # line and does.
+  #
+  # `headers_setter` rather than `bearertokenauth` because the latter's gRPC
+  # credential returns RequireTransportSecurity() true unconditionally, which
+  # would decide for the deployment whether this leg carries transport security.
+  # Do not reach for `additional_auth:` to chain it back in — that delegates the
+  # decision and returns true again.
+  headers_setter/gateway:
+    headers:
+      - action: upsert
+        key: authorization
+        value_file: ${env:OTELBOX_UPSTREAM_AUTH_HEADER_FILE}
+
+  # The journald cursor. Without a storage extension the receiver gets a no-op
+  # persister whose `Get` returns nil, so no cursor is kept and every
+  # `journalctl` respawn either loses records or replays the whole journal.
+  #
+  # This is a cursor, not a sending queue.
+  file_storage/journald:
+    directory: ${env:OTELBOX_STORAGE_DIR}/journald
+    create_directory: true
+    fsync: true
+
+  # The sending queue must persist before the receiver acknowledges a record.
+  # Keep it separate from the journald cursor so queue compaction cannot touch
+  # receiver state.
+  file_storage/gateway:
+    directory: ${env:OTELBOX_STORAGE_DIR}/gateway
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-5368709120}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/gateway
+      cleanup_on_start: true
+
+receivers:
+  host_metrics:
+    collection_interval: 30s
+    scrapers:
+      # v0.157.0 made the per-core `cpu` attribute on `system.cpu.time` opt-in,
+      # and it is deliberately not re-enabled: aggregate CPU time by state is
+      # what this host is asked, at a fraction of the series count.
+      cpu:
+      disk:
+        # Identity here is the device name alone, so a renumbered loop device
+        # is a permanent new series — one per snap refresh, for ever.
+        exclude:
+          match_type: regexp
+          devices:
+            - ^loop\d+$
+      load:
+      memory:
+      network:
+      paging:
+      # Aggregate counts from /proc/stat, which any account may read. This is
+      # deliberately not the `process` scraper: that one reads /proc/<pid>/io and
+      # dereferences /proc/<pid>/exe, both gated behind a ptrace access-mode
+      # check, so an unprivileged agent gets complete data for its own two or
+      # three processes and permission errors for everything that matters. Its
+      # mute_* options would leave a scraper that looks healthy and reports
+      # almost nothing.
+      processes:
+      filesystem:
+        # `squashfs` is the entry that matters: it is FS_REQUIRES_DEV, so the
+        # default `include_virtual_filesystems: false` does not filter it, and
+        # one mount per installed snap turns the series set over on every
+        # refresh. `overlay` is `nodev` and already filtered — kept only so the
+        # list stays right if virtual filesystems are ever included.
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - overlay
+            - squashfs
+
+  # Container statistics over a Docker API endpoint. A read-only proxy is the
+  # point of the variable: the raw socket is equivalent to host root, and which
+  # of the two a deployment offers is its decision.
+  docker_stats:
+    endpoint: ${env:OTELBOX_DOCKER_ENDPOINT}
+    collection_interval: 30s
+    timeout: 10s
+
+  prometheus/host:
+    config:
+      scrape_configs:
+        # Neighbouring processes that publish Prometheus metrics. Which ones
+        # those are is the deployment's to say; two entries are here to show the
+        # list is configuration rather than a fixed set.
+        - job_name: host-neighbours
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - ${env:OTELBOX_SCRAPE_TARGET_1}
+                - ${env:OTELBOX_SCRAPE_TARGET_2}
+        # The same bind host as the endpoint it scrapes, so the target follows
+        # the listener.
+        - job_name: otelcol-otelbox-host-agent
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - ${env:OTELBOX_BIND_HOST}:8890
+
+  # Selected units only, and the list being finite is the invariant: the whole
+  # journal would carry every authentication attempt and every kernel message
+  # off this host through a pipeline built for application telemetry. This
+  # collector's own unit must not be among them, or every send produces the log
+  # line that produces the next send.
+  #
+  # Linux-only, and it execs `journalctl` rather than reading the journal, so it
+  # needs a filesystem with that binary on it.
+  journald:
+    units:
+      - ${env:OTELBOX_JOURNAL_UNIT_1}
+      - ${env:OTELBOX_JOURNAL_UNIT_2}
+    storage: file_storage/journald
+
+processors:
+  # Without this, host metrics arrive carrying no statement of which machine
+  # produced them: the host_metrics receiver sets no resource attributes of its
+  # own. Only the system detector runs, so nothing reaches for a cloud metadata
+  # endpoint.
+  resource_detection/system:
+    detectors:
+      - system
+    system:
+      hostname_sources:
+        - os
+
+  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+  # Memory is expressed as a percentage rather than a fixed MiB figure because
+  # the same profile may run in a memory-limited container, as a bare host
+  # process or on a workstation, and the percentage resolves against the cgroup
+  # quota where there is one and against system memory where there is not.
+  #
+  # It gates on live Go heap, so it sees neither RSS nor the memory-mapped WAL
+  # above. Refusal is driven by the soft limit alone, which is
+  # (limit − spike); the spike figure is the most the heap may grow inside one
+  # check interval, and it is measurable rather than a rule of thumb.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 50
+    spike_limit_percentage: 10
+
+  # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
+  # drop every attribute nobody enumerated, leaving healthy-looking empty
+  # telemetry. Add patterns in all three profiles or in none.
+  redaction/secrets:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - '(?i).*authorization.*'
+      - '(?i).*api[._-]?key.*'
+      - '(?i).*cookie.*'
+      - '(?i)(^|.*[._-])(access|refresh|auth|secret|bearer)[._-]?token($|[._-].*)'
+      - '(?i).*password.*'
+    blocked_values:
+      - '(?i)Bearer\s+\S+'
+      - '(?i)(sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}'
+
+  # <<< SHARED
+
+exporters:
+  otlp_grpc/gateway:
+    endpoint: ${env:OTELBOX_UPSTREAM_ENDPOINT}
+    auth:
+      authenticator: headers_setter/gateway
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/gateway
+      sizer: bytes
+      queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}
+      # Scrapers cannot be back-pressured: blocking only trades a rejected item
+      # for every collection cycle missed while the queue remains full. The WAL
+      # protects an outage up to its explicit capacity; capacity alerts belong
+      # in the deployment that sizes the disk.
+      block_on_overflow: false
+      # Stated rather than defaulted: omit `batch:` entirely and there is no
+      # batcher at all, so the outgoing payload is unbounded in bytes.
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: 8388608
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+service:
+  extensions:
+    - healthcheckv2
+    - headers_setter/gateway
+    - file_storage/journald
+    - file_storage/gateway
+  telemetry:
+    # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+    # No `output_paths`: a second writer on the same inode interleaves lines and
+    # follows no rotation.
+    logs:
+      level: info
+      encoding: json
+    # <<< SHARED
+    metrics:
+      # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+      # `detailed`, because `normal` strips `error_type` and `error_permanent`
+      # from otelcol_exporter_send_failed_*, and without those this collector
+      # cannot tell a rejected credential from an unreachable peer — which is
+      # the failure this repository exists to make visible.
+      level: detailed
+      # <<< SHARED
+      # The port is this repository's convention; the address is the
+      # deployment's, so it follows the bind host the receivers use.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: ${env:OTELBOX_BIND_HOST}
+                port: 8890
+  pipelines:
+    # redaction/secrets runs here too. Host metric attributes are not obviously
+    # credential-shaped, but container labels and Prometheus target labels reach
+    # this pipeline from workloads this collector does not own.
+    metrics/host:
+      receivers:
+        - host_metrics
+        - docker_stats
+        - prometheus/host
+      processors:
+        - memory_limiter
+        - resource_detection/system
+        - redaction/secrets
+      exporters:
+        - otlp_grpc/gateway
+    logs/journal:
+      receivers:
+        - journald
+      processors:
+        - memory_limiter
+        - resource_detection/system
+        - redaction/secrets
+      exporters:
+        - otlp_grpc/gateway

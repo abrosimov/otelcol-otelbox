@@ -36,7 +36,8 @@
 //     bearer-token authentication, gateway receiver, gateway exporter.
 //  2. Redaction — credential-shaped attribute values never reach the sink,
 //     while the record carrying them does. The privacy invariant the collector
-//     exists for, and the one the shared base layer is shared in order to keep.
+//     exists for, and the one the role profiles carry an identical
+//     redaction/secrets block in order to keep.
 //  3. The regression above — an edge holding a token that is not in the
 //     gateway's allowlist drops the data AND says so. Both halves are asserted:
 //     the marker must be absent from the sink, and otelcol_exporter_send_failed_*
@@ -51,10 +52,17 @@
 //     against the CA the edge was handed and refuses to conclude anything if
 //     the transport is at fault.
 //
+// TestEdgePersistsAcceptedDataBeforeAcknowledgement: a record accepted while
+// the gateway is unavailable survives an edge SIGKILL and is delivered after
+// the gateway and edge start. The forced kill is the assertion's boundary: a
+// graceful shutdown would flush an in-memory processor batch and could let a
+// non-durable pipeline pass.
+//
 // TestBackendCouplingUnderQueuePressure: that two gateway backends are not
 // independent under `block_on_overflow: true`. A stopped backend with queue
-// headroom leaves the healthy one untouched; a stopped backend whose queue has
-// filled stalls it. A runbook in a consuming repository claims otherwise.
+// headroom leaves ingest and the healthy backend untouched; once its queue is
+// full, synchronous fan-out backpressures ingest. A runbook in a consuming
+// repository claims the backends are always independent.
 //
 // # Usage
 //

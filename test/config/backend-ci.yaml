@@ -1,5 +1,5 @@
-# otelbox — CI BACKEND DOUBLE. Not a role, and never composed with
-# config/base.yaml:
+# otelbox — CI BACKEND DOUBLE. Not a role, and never composed with a role
+# profile:
 #
 #   otelcol-otelbox --config test/config/backend-ci.yaml
 #

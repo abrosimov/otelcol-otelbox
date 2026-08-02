@@ -1,28 +1,32 @@
-# otelbox — EDGE ROLE, CI OVERLAY. Loaded THIRD, only by test/harness
+# otelbox — EDGE ROLE, CI OVERLAY. Loaded SECOND, only by test/harness
 # (TestEdgeToGatewayDelivery):
 #
-#   otelcol-otelbox --config config/base.yaml \
-#                   --config config/examples/edge.yaml \
-#                   --config test/config/edge-ci.yaml
+#   otelcol-otelbox --config config/edge.yaml --config test/config/edge-ci.yaml
 #
-# CI ONLY — never copy any part of this into a deployment. It changes ports, the
-# trust anchor on the edge→gateway leg, and the observation receivers the
-# delivery assertions are not about: a test run against retuned batch, queue or
-# redaction values would prove nothing about what is deployed.
+# CI ONLY — never copy any part of this into a deployment. It moves the
+# listeners into the 34xxx block and supplies the trust anchor for the
+# edge→gateway leg. Auth, redaction, queue and sender-batch settings are left alone:
+# they are what the assertions are about, and a test run against retuned values
+# would prove nothing about what ships.
 #
-# Environment, as a supervisor supplies it minus OTELBOX_EDGE_BIND_HOST,
-# OTELBOX_EDGE_PROBE_URL and OTELBOX_EDGE_HEALTH_ENDPOINT, which this layer
-# replaces every reference to: OTELBOX_EDGE_STORAGE, OTELBOX_EDGE_ENDPOINT,
-# OTELBOX_EDGE_TOKEN, OTELBOX_EDGE_NTP_ENDPOINT — plus OTELBOX_CI_EDGE_CA_FILE,
-# which only this layer names.
+# The role profile is a single file now, so this is the only merge involved and
+# the only rule that matters is the usual one: maps merge key by key and a list
+# replaces the earlier list wholesale.
+#
+# Environment, as a supervisor supplies it minus OTELBOX_BIND_HOST and
+# OTELBOX_HEALTH_ENDPOINT, which this layer replaces every reference to:
+# OTELBOX_STORAGE_DIR, OTELBOX_UPSTREAM_ENDPOINT,
+# OTELBOX_UPSTREAM_AUTH_HEADER_FILE — plus OTELBOX_CI_EDGE_CA_FILE, which only
+# this layer names. The numeric references in the role profile carry defaults,
+# so the harness supplies none of them.
 
 extensions:
   healthcheckv2:
     http:
-      # The 34xxx block misses both a workstation edge (4317/4318/13133/8888)
-      # and the server gateway, so a test can never quietly exercise a running
-      # collector. A literal, so the merged map holds no
-      # OTELBOX_EDGE_HEALTH_ENDPOINT reference for the harness to supply.
+      # The 34xxx block misses a running workstation edge (4317/4318/8888/13133)
+      # and a running gateway alike, so a test can never quietly exercise one. A
+      # literal, so the merged map holds no OTELBOX_HEALTH_ENDPOINT reference
+      # for the harness to supply.
       endpoint: 127.0.0.1:34133
 
 receivers:
@@ -33,9 +37,11 @@ receivers:
       http:
         endpoint: 127.0.0.1:34318
 
-  # Repointed at this process's own CI metrics port. Left at 8888 it would
-  # scrape whatever else answers there — a developer's running edge, which is
-  # exactly what the 34xxx block exists to make impossible.
+  # Repointed at this process's own CI metrics port. Left alone it would scrape
+  # whatever else answers on 8888 — a developer's running edge, which is exactly
+  # what the 34xxx block exists to make impossible. Replacing the list also
+  # removes the OTELBOX_BIND_HOST reference, since expansion runs over the
+  # merged map.
   prometheus/self:
     config:
       scrape_configs:
@@ -45,47 +51,27 @@ receivers:
             - targets:
                 - 127.0.0.1:34888
 
-  # A literal endpoint, because the harness supplies no OTELBOX_EDGE_PROBE_URL
-  # and expansion runs over the merged map — replacing the list removes the
-  # reference rather than leaving it unset. Nothing dials it: the pipeline
-  # below drops this receiver, so it is configured and never built.
-  http_check:
-    targets:
-      - endpoint: http://127.0.0.1:34318/v1/logs
-        method: GET
-
 exporters:
   otlp_grpc/gateway:
     tls:
-      # The role layer's `insecure: false` is inherited, not overridden: this
-      # leg carries a bearer token and its production setting is the one worth
-      # exercising. The harness mints the chain per run and the gateway serves
-      # it; nothing consults the runner's trust store, because
-      # include_system_ca_certs_pool defaults to false and only this pool is
-      # used.
+      # The role profile's `insecure: false` is inherited, not overridden: this
+      # leg carries a bearer credential and its production setting is the one
+      # worth exercising. The harness mints the chain per run and the gateway
+      # serves it; nothing consults the runner's trust store, because
+      # include_system_ca_certs_pool defaults to false and only this pool is used.
       ca_file: ${env:OTELBOX_CI_EDGE_CA_FILE}
 
 service:
   telemetry:
     metrics:
       # The send-failed assertion scrapes this endpoint, so the test has to
-      # reach it. A list, so it replaces the role layer's entry outright, and
-      # with it the OTELBOX_EDGE_BIND_HOST reference. The role layer's
-      # `level: detailed` is a map key and survives, which is what keeps
-      # `error_type` on the series that assertion reads.
+      # reach it. A list, so it replaces the profile's entry outright and with
+      # it the OTELBOX_BIND_HOST reference. `level: detailed` is a map key and
+      # survives, which is what keeps `error_type` on the series that assertion
+      # reads.
       readers:
         - pull:
             exporter:
               prometheus:
                 host: 127.0.0.1
                 port: 34888
-  pipelines:
-    # Repointed rather than deleted, because confmap cannot remove a key. Left
-    # alone, `host_metrics` would start ten scrapers, `ntp` would dial
-    # pool.ntp.org from a runner and `http_check` would probe a URL the harness
-    # never set — none of which the delivery assertions are about. Only
-    # `prometheus/self` stays, on the port above.
-    metrics/self:
-      receivers: [prometheus/self]
-      processors: [memory_limiter, resource_detection, redaction/secrets, batch]
-      exporters: [otlp_grpc/gateway]

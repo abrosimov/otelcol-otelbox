@@ -1,0 +1,293 @@
+# otelbox — GATEWAY ROLE (reference profile, not deployed).
+#
+#   otelcol-otelbox --config config/gateway.yaml
+#
+# One file, no layering: a consuming repository renders the ${env:...} values and
+# loads this alone. The block between the SHARED markers below is byte-identical
+# in all three role profiles and CI fails if it is not; edit it in all three or
+# in none.
+#
+# The role: accept OTLP, authenticate it, and forward what passed to N
+# receivers. Everything downstream trusts this collector, so the backend legs
+# carry no credential of their own — authentication terminates here. Its one
+# additional duty is not losing data while a backend is unreachable, which is
+# what the per-backend on-disk queues below are for.
+#
+# Two backends because fan-out is only observable at N ≥ 2; add or remove pairs
+# freely. They are deliberately identical apart from the endpoint and the
+# storage they name.
+#
+# Environment: OTELBOX_BIND_HOST, OTELBOX_HEALTH_ENDPOINT,
+# OTELBOX_INGEST_TOKEN_FILE, OTELBOX_INGEST_MAX_CONCURRENT_STREAMS,
+# OTELBOX_STORAGE_DIR, OTELBOX_STORAGE_MAX_SIZE_BYTES, OTELBOX_QUEUE_SIZE_BYTES,
+# OTELBOX_BACKEND_MAX_PAYLOAD_BYTES, OTELBOX_BACKEND_1_ENDPOINT,
+# OTELBOX_BACKEND_2_ENDPOINT.
+
+extensions:
+  # The same health check the other two roles wire, on the same keys; see
+  # config/edge.yaml for why each one is set. It says nothing about either
+  # backend: a blocked or rejected export sets no component status, so a gateway
+  # with both queues filling answers 200 throughout.
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT}
+      status:
+        enabled: true
+        path: /status
+      # Would serve the merged configuration with every ${env:...} expanded, the
+      # ingest allowlist path among them, over a listener carrying no
+      # authentication.
+      config:
+        enabled: false
+    component_health:
+      include_permanent_errors: true
+      include_recoverable_errors: false
+
+  # One allowlist for every client, one token per client, so one can be revoked
+  # without disturbing the rest. A receiver carries exactly one authenticator —
+  # `configauth.Config` holds a single ID, not a list — so two independent
+  # credential sets would mean two receivers.
+  #
+  # This file is parsed line by line, with everything after the first whitespace
+  # treated as a comment and the scheme prepended. That is NOT the format the
+  # clients' own `headers_setter` files use, and nothing warns about the
+  # difference.
+  bearertokenauth/ingest:
+    filename: ${env:OTELBOX_INGEST_TOKEN_FILE}
+
+  # One write-ahead log per backend: one slow receiver must not eat the disk
+  # budget another's backlog relies on, and a corrupted bbolt file must cost one
+  # backend rather than both.
+  #
+  # One file PER SIGNAL, not one per exporter — the queue names its storage
+  # client after the signal — so each directory holds a traces, a metrics and a
+  # logs file, each capped separately. The disk budget is three times max_size
+  # per backend, not one.
+  file_storage/backend_1:
+    directory: ${env:OTELBOX_STORAGE_DIR}/backend_1
+    create_directory: true
+    fsync: true
+    # Unset yields zero, and zero here means an UNLIMITED file; see
+    # config/edge.yaml for what the `:-` default does and does not cover.
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-10737418240}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/backend_1
+      # Removes a temp copy left behind by a kill mid-compaction, which would
+      # otherwise stay for ever.
+      cleanup_on_start: true
+
+  file_storage/backend_2:
+    directory: ${env:OTELBOX_STORAGE_DIR}/backend_2
+    create_directory: true
+    fsync: true
+    # See file_storage/backend_1; the two carry the same budget deliberately.
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-10737418240}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/backend_2
+      cleanup_on_start: true
+
+receivers:
+  # One receiver for every client. Every request authenticates, so the
+  # credential is the access control and the bind address is not.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: ${env:OTELBOX_BIND_HOST}:14319
+        # 32 MiB, binding the compressed length and the decompressed one alike.
+        # Keep it at or below the HTTP limit and above every sender's
+        # `batch.max_size`.
+        max_recv_msg_size_mib: 32
+        # The only aggregate brake on inbound memory, and it is PER CONNECTION:
+        # gRPC allocates and decompresses a whole message before any
+        # interceptor runs, so `memory_limiter` cannot refuse it and even an
+        # unauthenticated client can make this collector hold one. Total
+        # exposure is (clients × this × max_recv_msg_size_mib), and the client
+        # count is not something this profile can know.
+        # Zero means unlimited, and an unset variable yields zero, so the
+        # default is what makes this setting exist at all.
+        max_concurrent_streams: ${env:OTELBOX_INGEST_MAX_CONCURRENT_STREAMS:-16}
+        auth:
+          authenticator: bearertokenauth/ingest
+      http:
+        endpoint: ${env:OTELBOX_BIND_HOST}:14320
+        # The same 32 MiB in bytes. Stated rather than left to confighttp's
+        # 20 MiB default, which would silently make HTTP the tighter transport.
+        max_request_body_size: 33554432
+        auth:
+          authenticator: bearertokenauth/ingest
+
+  # This collector's own metrics, scraped so they take the same durable, queued
+  # path as everything else rather than the separate SDK export, which bypasses
+  # redaction, the queues and the WALs.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-otelbox-gateway
+          scrape_interval: 30s
+          static_configs:
+            # The same bind host as the endpoint it scrapes, so the target
+            # follows the listener.
+            - targets:
+                - ${env:OTELBOX_BIND_HOST}:8889
+
+processors:
+  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+  # Memory is expressed as a percentage rather than a fixed MiB figure because
+  # the same profile may run in a memory-limited container, as a bare host
+  # process or on a workstation, and the percentage resolves against the cgroup
+  # quota where there is one and against system memory where there is not.
+  #
+  # It gates on live Go heap, so it sees neither RSS nor the memory-mapped WAL
+  # above. Refusal is driven by the soft limit alone, which is
+  # (limit − spike); the spike figure is the most the heap may grow inside one
+  # check interval, and it is measurable rather than a rule of thumb.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 50
+    spike_limit_percentage: 10
+
+  # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
+  # drop every attribute nobody enumerated, leaving healthy-looking empty
+  # telemetry. Add patterns in all three profiles or in none.
+  redaction/secrets:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - '(?i).*authorization.*'
+      - '(?i).*api[._-]?key.*'
+      - '(?i).*cookie.*'
+      - '(?i)(^|.*[._-])(access|refresh|auth|secret|bearer)[._-]?token($|[._-].*)'
+      - '(?i).*password.*'
+    blocked_values:
+      - '(?i)Bearer\s+\S+'
+      - '(?i)(sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}'
+
+  # <<< SHARED
+
+exporters:
+  # `otlp_grpc`, not `otlp`: plain `otlp` is the deprecated exporter alias.
+  #
+  # NO `headers:` AND NO `tls:` BLOCK, and both omissions are deliberate.
+  # Authentication terminated at the receiver above, so this leg carries no
+  # credential of its own. And omitting `tls:` leaves `insecure` at its zero
+  # value, false — writing `insecure: true` here would be this profile deciding
+  # for a deployment how far the leg travels, which it cannot know. A deployment
+  # whose backend speaks plaintext adds that one key itself.
+  otlp_grpc/backend_1:
+    endpoint: ${env:OTELBOX_BACKEND_1_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/backend_1
+      # Bytes, because it is the only unit commensurable with the file cap it
+      # has to stay under; an item count blocks whatever the items weigh. Keep
+      # it below that cap so the overflow policy binds before a storage write
+      # fails, and remember the cap applies per signal file.
+      sizer: bytes
+      queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-9663676416}
+      # Backpressure rather than silent loss: this role's producers are OTLP
+      # clients that hold their own data and retry. Note that fan-out is
+      # synchronous on the caller's goroutine, so a full queue here stalls the
+      # other backend too — size the queues to make overflow an incident and
+      # alert before it.
+      block_on_overflow: true
+      # A record above max_size is dropped together with the rest of its
+      # request, and the ceiling is whatever the backend accepts — which this
+      # profile cannot know, so it is deployment data like the endpoint above.
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        # Zero would mean no splitting at all, so the default matters: unset
+        # would hand the backend an unbounded payload rather than none.
+        max_size: ${env:OTELBOX_BACKEND_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      # No deadline. A non-zero value is a data-loss deadline: when it passes the
+      # item is deleted, which is exactly what the disk was bought to prevent.
+      max_elapsed_time: 0s
+
+  # Identical to backend_1 apart from the endpoint and the storage it names.
+  # The pair demonstrates fan-out, not two different kinds of backend.
+  otlp_grpc/backend_2:
+    endpoint: ${env:OTELBOX_BACKEND_2_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/backend_2
+      sizer: bytes
+      queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-9663676416}
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        # Zero would mean no splitting at all, so the default matters: unset
+        # would hand the backend an unbounded payload rather than none.
+        max_size: ${env:OTELBOX_BACKEND_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+service:
+  extensions:
+    - healthcheckv2
+    - bearertokenauth/ingest
+    - file_storage/backend_1
+    - file_storage/backend_2
+  telemetry:
+    # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+    # No `output_paths`: a second writer on the same inode interleaves lines and
+    # follows no rotation.
+    logs:
+      level: info
+      encoding: json
+    # <<< SHARED
+    metrics:
+      # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
+      # `detailed`, because `normal` strips `error_type` and `error_permanent`
+      # from otelcol_exporter_send_failed_*, and without those this collector
+      # cannot tell a rejected credential from an unreachable peer — which is
+      # the failure this repository exists to make visible.
+      level: detailed
+      # <<< SHARED
+      # The port is this repository's convention; the address is the
+      # deployment's, so it follows the bind host the receivers use.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: ${env:OTELBOX_BIND_HOST}
+                port: 8889
+  pipelines:
+    # Redaction runs here too, not only at the edges: this receiver accepts from
+    # producers that never passed through one, so the guarantee is a property of
+    # this collector rather than of every client behaving.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
+    # This collector observing itself, on the same processors as everything
+    # else: a scrape target label is an attribute too.
+    metrics/self:
+      receivers: [prometheus/self]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]

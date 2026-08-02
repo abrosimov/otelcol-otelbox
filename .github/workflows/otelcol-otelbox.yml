@@ -1,15 +1,15 @@
 name: otelcol-otelbox
 
-# Build, prove and publish the OCB collector for all three roles: `edge` on a
-# macOS workstation (darwin/arm64), `gateway` and `host-agent` on the Ubuntu
-# server (linux/amd64).
+# Build, prove and publish the OCB collector for all three roles. Which target
+# a role runs on is a deployment's business; the matrix exists because
+# smoke-check.sh executes the binary, so each target has to build natively.
 #
 # `dist.version` in builder.yaml is the single source of truth: bump it, merge,
 # and this run publishes `v<version>` — there is no tag trigger, so a hand-cut
 # tag does nothing.
 #
 # Building and testing are ungated on purpose. Hang them off the
-# release-existence check and a change to config/base.yaml or the harness goes
+# release-existence check and a change to a role profile or to the harness goes
 # uncompiled whenever its version is already released, and CI reports green on
 # code it never built. Only publishing is gated, on the version being new, the
 # ref being the default branch, and the event not being a pull request. To
@@ -27,6 +27,7 @@ on:
     paths:
       - builder.yaml
       - smoke-check.sh
+      - shared-config-check.sh
       - Dockerfile
       - .dockerignore
       - config/**
@@ -36,6 +37,7 @@ on:
     paths:
       - builder.yaml
       - smoke-check.sh
+      - shared-config-check.sh
       - Dockerfile
       - .dockerignore
       - config/**
@@ -176,7 +178,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          # Exact because Go 1.25.0 mislinks the generated collector while the
+          # patched 1.25 toolchain builds the same manifest successfully.
+          go-version: "1.25.12"
           # No go.sum at the repository root — OCB generates one into _build/
           # during this job — and setup-go fails when it has nothing to key a
           # cache on.
@@ -227,7 +231,7 @@ jobs:
           retention-days: 7
 
   validate-config:
-    name: Validate the composed role profiles
+    name: Validate the role profiles
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -248,65 +252,72 @@ jobs:
         # Every job that downloads a binary needs this.
         run: chmod +x otelcol-otelbox_linux_amd64
 
-      - name: Validate the three role profiles as they actually compose
-        # Neither layer is runnable alone, so they are validated in the order
-        # the deployment loads them: a merge error appears only in composition.
-        env:
-          # An unset ${env:...} is a load error, not a default, so every
-          # variable the profiles reference needs a dummy value here.
-          OTELBOX_EDGE_BIND_HOST: 127.0.0.1
-          OTELBOX_EDGE_ENDPOINT: 127.0.0.1:4317
-          OTELBOX_EDGE_TOKEN: ci-validation-placeholder
-          OTELBOX_EDGE_PROBE_URL: http://127.0.0.1:4318/v1/logs
-          OTELBOX_EDGE_NTP_ENDPOINT: pool.ntp.org:123
-          OTELBOX_EDGE_HEALTH_ENDPOINT: 127.0.0.1:13133
-          OTELBOX_GATEWAY_BIND_HOST: 0.0.0.0
-          OTELBOX_GATEWAY_DOCKER_ENDPOINT: unix:///var/run/docker.sock
-          OTELBOX_GATEWAY_HEALTH_ENDPOINT: 0.0.0.0:14323
-          OTELBOX_GATEWAY_BACKEND_1_ENDPOINT: 127.0.0.1:14317
-          OTELBOX_GATEWAY_BACKEND_2_ENDPOINT: 127.0.0.1:24317
-          OTELBOX_GATEWAY_BACKEND_2_TOKEN: ci-validation-placeholder
-          OTELBOX_HOST_AGENT_BIND_HOST: 127.0.0.1
-          OTELBOX_HOST_AGENT_GATEWAY_ENDPOINT: 127.0.0.1:14319
-          OTELBOX_HOST_AGENT_DOCKER_ENDPOINT: tcp://127.0.0.1:2375
-          OTELBOX_HOST_AGENT_HEALTH_ENDPOINT: 127.0.0.1:14324
-          OTELBOX_HOST_AGENT_SCRAPE_TARGET_1: 127.0.0.1:19001
-          OTELBOX_HOST_AGENT_SCRAPE_TARGET_2: 127.0.0.1:19002
-          OTELBOX_HOST_AGENT_JOURNAL_UNIT_1: ssh.service
-          OTELBOX_HOST_AGENT_JOURNAL_UNIT_2: cron.service
+      - name: Check that the profiles still agree on their shared blocks
+        # The role profiles used to share a base layer, which made the common
+        # settings identical by construction. They no longer do, and this is what
+        # replaces that guarantee — it needs no binary, so it runs first and
+        # fails before anything else is attempted.
+        run: ./shared-config-check.sh
+
+      - name: Validate the three role profiles
+        # Each profile is one self-contained file, so this loads the published
+        # artefact rather than composing anything.
+        #
+        # The variables are set per invocation rather than in a job-wide `env:`
+        # block because the three roles want different values for the same
+        # names — loopback against a wildcard bind, a health port each.
         run: |
           state="$(mktemp -d)"
-          export OTELBOX_EDGE_STORAGE="${state}/edge"
-          export OTELBOX_GATEWAY_STORAGE="${state}/gateway"
-          export OTELBOX_GATEWAY_TOKEN_FILE="${state}/ingest-tokens"
-          export OTELBOX_HOST_AGENT_STORAGE="${state}/host-agent"
-          export OTELBOX_HOST_AGENT_AUTH_HEADER_FILE="${state}/host-agent-header"
+
           # Real files: a validation that passed on a path pointing at nothing
-          # would be weaker than one that does not.
+          # would be weaker than one that does not. The two formats differ and
+          # nothing warns — `bearertokenauth` takes the bare token up to the
+          # first whitespace and prepends the scheme, `headers_setter`
+          # TrimSpace's the whole file and prepends nothing, so a comment in the
+          # second would become part of the header value.
           printf 'ci-validation-placeholder  not a real credential\n' \
-            > "$OTELBOX_GATEWAY_TOKEN_FILE"
-          # `headers_setter` prepends no scheme and TrimSpace's the whole file,
-          # so this one carries the header value verbatim and no comment.
-          printf 'Bearer ci-validation-placeholder\n' \
-            > "$OTELBOX_HOST_AGENT_AUTH_HEADER_FILE"
+            > "${state}/ingest-tokens"
+          printf 'Bearer ci-validation-placeholder\n' > "${state}/auth-header"
 
-          echo "--- edge: config/base.yaml + config/examples/edge.yaml"
-          ./otelcol-otelbox_linux_amd64 validate \
-            --config config/base.yaml \
-            --config config/examples/edge.yaml
+          # Dummies are still required for every non-numeric reference. Contrary
+          # to what this workflow used to claim, an unset variable is NOT a load
+          # error — the provider warns and yields the zero value — so an omission
+          # here would surface as an empty endpoint rather than as a missing
+          # variable. The numeric references carry `:-` defaults in the profiles
+          # and need nothing.
 
-          echo "--- gateway: config/base.yaml + config/examples/gateway.yaml"
-          ./otelcol-otelbox_linux_amd64 validate \
-            --config config/base.yaml \
-            --config config/examples/gateway.yaml
+          echo "--- edge: config/edge.yaml"
+          OTELBOX_BIND_HOST=127.0.0.1 \
+          OTELBOX_HEALTH_ENDPOINT=127.0.0.1:13133 \
+          OTELBOX_STORAGE_DIR="${state}/edge" \
+          OTELBOX_UPSTREAM_ENDPOINT=127.0.0.1:14319 \
+          OTELBOX_UPSTREAM_AUTH_HEADER_FILE="${state}/auth-header" \
+            ./otelcol-otelbox_linux_amd64 validate --config config/edge.yaml
 
-          echo "--- host agent: config/base.yaml + config/examples/host-agent.yaml"
-          ./otelcol-otelbox_linux_amd64 validate \
-            --config config/base.yaml \
-            --config config/examples/host-agent.yaml
+          echo "--- gateway: config/gateway.yaml"
+          OTELBOX_BIND_HOST=0.0.0.0 \
+          OTELBOX_HEALTH_ENDPOINT=0.0.0.0:14323 \
+          OTELBOX_STORAGE_DIR="${state}/gateway" \
+          OTELBOX_INGEST_TOKEN_FILE="${state}/ingest-tokens" \
+          OTELBOX_BACKEND_1_ENDPOINT=127.0.0.1:14317 \
+          OTELBOX_BACKEND_2_ENDPOINT=127.0.0.1:24317 \
+            ./otelcol-otelbox_linux_amd64 validate --config config/gateway.yaml
+
+          echo "--- host agent: config/host-agent.yaml"
+          OTELBOX_BIND_HOST=127.0.0.1 \
+          OTELBOX_HEALTH_ENDPOINT=127.0.0.1:14324 \
+          OTELBOX_STORAGE_DIR="${state}/host-agent" \
+          OTELBOX_UPSTREAM_ENDPOINT=127.0.0.1:14319 \
+          OTELBOX_UPSTREAM_AUTH_HEADER_FILE="${state}/auth-header" \
+          OTELBOX_DOCKER_ENDPOINT=tcp://127.0.0.1:2375 \
+          OTELBOX_SCRAPE_TARGET_1=127.0.0.1:19001 \
+          OTELBOX_SCRAPE_TARGET_2=127.0.0.1:19002 \
+          OTELBOX_JOURNAL_UNIT_1=ssh.service \
+          OTELBOX_JOURNAL_UNIT_2=cron.service \
+            ./otelcol-otelbox_linux_amd64 validate --config config/host-agent.yaml
 
   config-bundle:
-    name: Package the published configuration layers
+    name: Package the published role profiles
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -323,8 +334,24 @@ jobs:
           tar --create --gzip \
             --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
             --file otelcol-otelbox_config.tar.gz \
-            config
-          tar --list --file otelcol-otelbox_config.tar.gz
+            config/edge.yaml config/gateway.yaml config/host-agent.yaml
+
+          actual="$(tar --list --file otelcol-otelbox_config.tar.gz)"
+          expected="$(printf '%s\n' \
+            config/edge.yaml config/gateway.yaml config/host-agent.yaml)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "configuration bundle contains an unexpected path set:" >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+          printf '%s\n' "$actual"
+
+      - name: Check the Homebrew configuration contract
+        run: |
+          ruby -c Formula/otelcol-otelbox.rb
+          grep -Fq \
+            '(pkgshare/"config").install "edge.yaml", "gateway.yaml", "host-agent.yaml"' \
+            Formula/otelcol-otelbox.rb
 
       - name: Upload the configuration bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -335,7 +362,7 @@ jobs:
           retention-days: 7
 
   integration-test:
-    name: End-to-end edge → gateway integration test
+    name: End-to-end delivery, durability and queue-pressure tests
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -356,12 +383,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          go-version: "1.25.12"
           # The harness is stdlib-only, so there is no go.sum for setup-go to
           # key a cache on and it fails the step outright.
           cache: false
 
-      - name: Run the end-to-end pipeline test
+      - name: Run the end-to-end harness
         # THE TRAP THIS STEP EXISTS FOR. The deployed edge failed every export
         # for days while the process ran, the health endpoint answered 200 and
         # the receiver accepted everything — none of which proves delivery, so a
@@ -501,13 +528,14 @@ jobs:
           Each ships a matching \`.sha256\` holding the bare hex digest, no
           filename column.
 
-          ## Configuration layers
+          ## Configuration
 
-          \`otelcol-otelbox_config.tar.gz\` holds \`config/base.yaml\` and the
-          reference role profiles as they were validated for this version, under
-          a single \`config/\` directory. It is what the Homebrew formula
-          installs alongside the binary; a deployment can also use it to diff a
-          rendered configuration against the profile CI actually proved.
+          \`otelcol-otelbox_config.tar.gz\` holds the three role profiles as they
+          were validated for this version, under a single \`config/\` directory.
+          There is no shared base layer any more: each profile is one
+          self-contained file, loaded on its own. It is what the Homebrew
+          formula installs alongside the binary; a deployment can also use it to
+          diff a rendered configuration against the profile CI actually proved.
 
           ## Install on macOS (darwin/arm64)
 
@@ -550,12 +578,18 @@ jobs:
 
           - both binaries link every component \`builder.yaml\` declares, checked
             natively on each target;
-          - \`config/base.yaml\` composes into a valid edge profile, a valid
-            gateway profile and a valid host-agent profile;
+          - the edge, gateway and host-agent profiles each load on their own,
+            and their shared blocks are byte-identical across all three;
           - a real edge → authenticated gateway → sink run delivered telemetry,
             stripped every credential-shaped value, and made a wrong ingestion
             token fail loudly in the edge's own metrics rather than drop
-            telemetry in silence.
+            telemetry in silence;
+          - a record acknowledged by the edge while the gateway was unavailable
+            survived a forced edge process termination and was delivered after
+            both processes returned;
+          - under queue pressure, a stopped gateway backend left its healthy
+            neighbour and ingest untouched until its own queue filled, then
+            backpressured the receiver through synchronous fan-out.
 
           Built from ${GITHUB_SHA}.
           EOF

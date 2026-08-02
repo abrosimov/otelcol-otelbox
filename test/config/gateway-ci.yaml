@@ -1,24 +1,22 @@
-# otelbox — GATEWAY ROLE, CI OVERLAY. Loaded THIRD, only by test/harness
+# otelbox — GATEWAY ROLE, CI OVERLAY. Loaded SECOND, only by test/harness
 # (TestEdgeToGatewayDelivery):
 #
-#   otelcol-otelbox --config config/base.yaml \
-#                   --config config/examples/gateway.yaml \
+#   otelcol-otelbox --config config/gateway.yaml \
 #                   --config test/config/gateway-ci.yaml
 #
 # CI ONLY, never copied into a deployment. It moves the listeners into the 34xxx
-# block and swaps the backends for a sink the test can read — the real
-# backends do not exist in CI, and standing them up would test them rather
-# than the collector. Auth, redaction, limits and processor order are left
-# alone: they are what the assertions are about. A `file` sink cannot be
-# stopped, hence the separate gateway-coupling-ci.yaml.
+# block and swaps the backends for a sink the test can read — the real backends
+# do not exist in CI, and standing them up would test them rather than this
+# collector. Auth, redaction, limits and processor order are left alone: they
+# are what the assertions are about. A `file` sink cannot be stopped, hence the
+# separate gateway-coupling-ci.yaml.
 #
-# Environment, minus OTELBOX_GATEWAY_BIND_HOST and
-# OTELBOX_GATEWAY_HEALTH_ENDPOINT, which this layer replaces every reference to:
-# OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
-# OTELBOX_GATEWAY_DOCKER_ENDPOINT, OTELBOX_GATEWAY_BACKEND_1_ENDPOINT,
-# OTELBOX_GATEWAY_BACKEND_2_ENDPOINT and OTELBOX_GATEWAY_BACKEND_2_TOKEN (the
-# last four unused here, but expanded at load time), plus OTELBOX_CI_SINK,
-# OTELBOX_CI_GATEWAY_CERT_FILE and OTELBOX_CI_GATEWAY_KEY_FILE.
+# Environment, minus OTELBOX_BIND_HOST and OTELBOX_HEALTH_ENDPOINT, which this
+# layer replaces every reference to: OTELBOX_INGEST_TOKEN_FILE,
+# OTELBOX_STORAGE_DIR, OTELBOX_BACKEND_1_ENDPOINT and OTELBOX_BACKEND_2_ENDPOINT
+# (the last two unused here, but still expanded at load because a key cannot be
+# removed by a later layer), plus OTELBOX_CI_SINK, OTELBOX_CI_GATEWAY_CERT_FILE
+# and OTELBOX_CI_GATEWAY_KEY_FILE.
 
 extensions:
   healthcheckv2:
@@ -44,10 +42,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 127.0.0.1:34327
-        # The far end of the one leg this repository fixes at
-        # `insecure: false`, so CI serves a real certificate rather than
-        # leaving the only production TLS setting on the main leg unexercised.
-        # Minted per run by the harness, with 127.0.0.1 as an IP SAN.
+        # The far end of the one leg this repository fixes at `insecure: false`,
+        # so CI serves a real certificate rather than leaving the only
+        # production TLS setting on the main leg unexercised. Minted per run by
+        # the harness, with 127.0.0.1 as an IP SAN.
         tls:
           cert_file: ${env:OTELBOX_CI_GATEWAY_CERT_FILE}
           key_file: ${env:OTELBOX_CI_GATEWAY_KEY_FILE}
@@ -57,13 +55,13 @@ receivers:
       http:
         endpoint: 127.0.0.1:34328
 
-  # A literal target, because the harness supplies no OTELBOX_GATEWAY_BIND_HOST
-  # and expansion runs over the merged map. Nothing scrapes it: the pipeline
-  # below drops this receiver, so it is configured and never built.
+  # A literal target, because the harness supplies no OTELBOX_BIND_HOST and
+  # expansion runs over the merged map. Nothing scrapes it: the pipeline below
+  # drops this receiver, so it is configured and never built.
   prometheus/self:
     config:
       scrape_configs:
-        - job_name: otel-gateway
+        - job_name: otelcol-otelbox-gateway
           scrape_interval: 30s
           static_configs:
             - targets:
@@ -79,28 +77,25 @@ service:
                 host: 127.0.0.1
                 port: 34889
   pipelines:
-    # Every pipeline is restated because lists replace rather than merge — naming
-    # only the exporters would leave the real backends attached. `processors` is
-    # restated identically on purpose: it is the line a reviewer checks when
-    # asking whether the test still runs redaction.
+    # Every pipeline is restated because lists replace rather than merge —
+    # naming only the exporters would leave the real backends attached.
+    # `processors` is restated identically on purpose: it is the line a reviewer
+    # checks when asking whether the test still runs redaction.
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, batch]
+      processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, batch]
+      processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, batch]
+      processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]
-    # Repointed rather than deleted, because confmap cannot remove a key. Left
-    # alone, `docker_stats` would open a Docker socket the runner does not have
-    # and kill startup. With the two receivers collapsed into one, the only
-    # replacement that opens nothing new is that receiver itself — harmless
-    # because the assertions post logs, which never reach a metrics pipeline.
+    # Only the exporters need swapping here now: this pipeline's one receiver is
+    # the self-scrape, repointed above, and it opens nothing the runner lacks.
     metrics/self:
-      receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, batch]
+      receivers: [prometheus/self]
+      processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]

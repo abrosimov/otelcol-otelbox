@@ -46,8 +46,9 @@ func startCollector(t *testing.T, spec collectorSpec) *collector {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// The supervisor's environment plus this role's, exactly as launchd and
-	// Docker Compose supply it: the configuration layers expand ${env:...} at
-	// load time and an unset variable is a load error, not a default.
+	// Docker Compose supply it. Every reference the merged map still holds
+	// without a `:-` default has to be here: an unset one expands to the zero
+	// value, which surfaces as a component fault rather than a named variable.
 	cmd.Env = os.Environ()
 	for key, value := range spec.env {
 		cmd.Env = append(cmd.Env, key+"="+value)
@@ -87,6 +88,23 @@ func (c *collector) stop(t *testing.T) {
 			_ = c.cmd.Process.Kill()
 			<-c.exited
 		}
+	})
+}
+
+// The durability assertion needs process death without the pipeline shutdown
+// that would flush an in-memory processor batch and mask the loss it guards.
+func (c *collector) crash(t *testing.T) {
+	t.Helper()
+
+	c.once.Do(func() {
+		defer c.log.Close()
+
+		if c.alive() {
+			if err := c.cmd.Process.Kill(); err != nil {
+				t.Fatalf("could not kill the %s collector: %v", c.name, err)
+			}
+		}
+		<-c.exited
 	})
 }
 

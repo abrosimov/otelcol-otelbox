@@ -44,7 +44,9 @@ receivers:
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.157.0
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.157.0
+  # Deliberately no batchprocessor: it acknowledges into an in-memory channel
+  # before the persistent exporter queue and can therefore violate the WAL
+  # boundary. Every role batches inside `sending_queue` after durable enqueue.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.157.0
   # OTTL. redaction masks attributes and a map-shaped body only; Claude Code's

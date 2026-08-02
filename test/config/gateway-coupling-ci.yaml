@@ -1,8 +1,7 @@
-# otelbox — GATEWAY ROLE, BACKEND-COUPLING CI OVERLAY. Loaded THIRD, only by
+# otelbox — GATEWAY ROLE, BACKEND-COUPLING CI OVERLAY. Loaded SECOND, only by
 # test/harness (TestBackendCouplingUnderQueuePressure):
 #
-#   otelcol-otelbox --config config/base.yaml \
-#                   --config config/examples/gateway.yaml \
+#   otelcol-otelbox --config config/gateway.yaml \
 #                   --config test/config/gateway-coupling-ci.yaml
 #
 # CI ONLY, never copied into a deployment. A second gateway overlay because
@@ -10,16 +9,14 @@
 # this one keeps both real exporters, `block_on_overflow`, both WALs and the
 # deployed fan-out, and points them at two processes the test can kill.
 #
-# Only queue sizes, `batch.timeout` and the ports move, and none of them is what
-# is asserted: the claim is that a *full* queue couples the backends, not how
-# long 9 GiB takes to fill at 5s a batch.
+# Only queue sizes, plaintext test transport and ports move, and none of them is
+# what is asserted: the claim is that a *full* queue couples the backends, not
+# how long the deployed queue takes to fill.
 #
-# Environment, minus OTELBOX_GATEWAY_BIND_HOST and
-# OTELBOX_GATEWAY_HEALTH_ENDPOINT, which this layer replaces every reference to:
-# OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
-# OTELBOX_GATEWAY_DOCKER_ENDPOINT and OTELBOX_GATEWAY_BACKEND_2_TOKEN (the last
-# two unused here, but expanded at load time), OTELBOX_CI_HEALTHY_ENDPOINT and
-# OTELBOX_CI_STALLED_ENDPOINT.
+# Environment, minus OTELBOX_BIND_HOST and OTELBOX_HEALTH_ENDPOINT, which this
+# layer replaces every reference to, and minus the two backend endpoints, which
+# it replaces with the CI doubles: OTELBOX_INGEST_TOKEN_FILE,
+# OTELBOX_STORAGE_DIR, OTELBOX_CI_HEALTHY_ENDPOINT, OTELBOX_CI_STALLED_ENDPOINT.
 
 extensions:
   healthcheckv2:
@@ -29,8 +26,9 @@ extensions:
       endpoint: 127.0.0.1:34135
 
 receivers:
-  # `auth:` is inherited from the role layer and still enforced — a later layer
-  # cannot remove a key — so the scenario posts to 34348 with the ingest token.
+  # `auth:` is inherited from the role profile and still enforced — a later
+  # layer cannot remove a key — so the scenario posts to 34348 with a token from
+  # the one allowlist.
   otlp:
     protocols:
       grpc:
@@ -38,39 +36,38 @@ receivers:
       http:
         endpoint: 127.0.0.1:34348
 
-  # A literal target, because the harness supplies no OTELBOX_GATEWAY_BIND_HOST
-  # and expansion runs over the merged map. Nothing scrapes it: the pipeline
-  # below drops this receiver, so it is configured and never built.
+  # A literal target, because the harness supplies no OTELBOX_BIND_HOST and
+  # expansion runs over the merged map. Nothing scrapes it: the pipeline below
+  # drops this receiver, so it is configured and never built.
   prometheus/self:
     config:
       scrape_configs:
-        - job_name: otel-gateway
+        - job_name: otelcol-otelbox-gateway
           scrape_interval: 30s
           static_configs:
             - targets:
                 - 127.0.0.1:34899
 
-processors:
-  # All three keys restated because maps merge one by one; only the timeout is
-  # deliberately different.
-  batch:
-    timeout: 200ms
-    send_batch_size: 8192
-    send_batch_max_size: 8192
-
 exporters:
   otlp_grpc/backend_1:
     endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
+    # The backend doubles speak plaintext; production exporters retain secure
+    # defaults.
+    tls:
+      insecure: true
     sending_queue:
       # Eight times the other queue: this backend stays up and must never be the
       # thing that blocks, or a stall could not be attributed to its neighbour.
       queue_size: 16777216
   otlp_grpc/backend_2:
     endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
+    tls:
+      insecure: true
     sending_queue:
-      # Cannot usefully go lower: upstream refuses a queue below the batcher's
-      # inherited 1 MiB `min_size`, and a single record must still fit, since a
-      # request larger than the queue is rejected rather than blocked.
+      # Cannot usefully go lower: upstream refuses a queue below the sender
+      # batcher's inherited 1 MiB `min_size`, and a single record must still
+      # fit, since a request larger than the queue is rejected rather than
+      # blocked.
       queue_size: 2097152
 
 service:
@@ -84,11 +81,12 @@ service:
                 port: 34899
   pipelines:
     # Repointed rather than deleted, because a later layer cannot remove a key:
-    # left alone, `docker_stats` would open a Docker socket the runner does not
-    # have, and `prometheus/self` would push a steady metrics stream through the
-    # very queues whose fill rate this scenario measures. Every other pipeline is
-    # inherited whole, so the fan-out under test is the deployed one.
+    # left alone, `prometheus/self` would push a steady metrics stream through
+    # the very queues whose fill rate this scenario measures. The replacement is
+    # the OTLP receiver, which is already built and harmless here — the scenario
+    # posts logs, which never reach a metrics pipeline. Every other pipeline is
+    # inherited whole, so the fan-out under test is the published one.
     metrics/self:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, batch]
+      processors: [memory_limiter, redaction/secrets]
       exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]

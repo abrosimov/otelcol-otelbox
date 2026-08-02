@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// The marker key is matched by none of the base layer's blocked key patterns
-// and the marker value by none of its blocked values, so a record carrying one
+// The marker key is matched by none of the role profiles' blocked key patterns
+// and the marker value by none of their blocked values, so a record carrying one
 // always survives redaction — which is what makes "the marker arrived" and "the
 // secret did not" independent facts rather than one fact stated twice.
 const markerKey = "otelbox.ci.marker"
@@ -94,7 +94,7 @@ func logPayload(t *testing.T, marker, body string, extra ...attribute) []byte {
 	return payload
 }
 
-// Three attributes covering both redaction mechanisms in config/base.yaml, so a
+// Three attributes covering both redaction mechanisms in redaction/secrets, so a
 // pattern list that loses either one fails here:
 //
 //	password                          — blocked_key_patterns, innocuous value
@@ -228,11 +228,20 @@ func sinkTail(path string, lines int) string {
 	if err != nil {
 		return fmt.Sprintf("(no sink at %s: %v)", path, err)
 	}
+	const maxDiagnosticBytes = 16 * 1024
+	truncated := len(raw) > maxDiagnosticBytes
+	if truncated {
+		raw = raw[len(raw)-maxDiagnosticBytes:]
+	}
 	all := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	if len(all) > lines {
 		all = all[len(all)-lines:]
 	}
-	return strings.Join(all, "\n")
+	tail := strings.Join(all, "\n")
+	if truncated {
+		return fmt.Sprintf("(truncated to the last %d bytes)\n%s", maxDiagnosticBytes, tail)
+	}
+	return tail
 }
 
 func sinkSize(path string) int64 {
@@ -264,8 +273,15 @@ func scrapeMetrics(port int) string {
 // cosmetic upstream change into a red build. The prefix is anchored at the line
 // start, which also skips the `# HELP`/`# TYPE` lines.
 func exporterReportsFailure(port int) bool {
+	return exporterMetricPositive(port, "otelcol_exporter_send_failed", "")
+}
+
+func exporterMetricPositive(port int, prefix, exporter string) bool {
 	for _, line := range strings.Split(scrapeMetrics(port), "\n") {
-		if !strings.HasPrefix(line, "otelcol_exporter_send_failed") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if exporter != "" && !strings.Contains(line, `exporter="`+exporter+`"`) {
 			continue
 		}
 		fields := strings.Fields(line)

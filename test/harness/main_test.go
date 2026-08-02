@@ -38,11 +38,9 @@ const (
 	stalledBackendMetricsPort = 34892
 )
 
-// Generous rather than tight. The inherited production values put a 5s batch
-// timeout on each of the two hops plus the queue and sink flush intervals, so
-// the happy path is ~12s of legitimate latency; anything under ~30s would be a
-// flake generator on a loaded CI runner. These bound failure, not success — a
-// passing run touches none of them.
+// Generous rather than tight. TLS startup, persistent queue recovery and the
+// file sink all contend with a loaded CI runner; these values bound failure,
+// not success, so a passing run normally touches none of them.
 const (
 	readyTimeout    = 45 * time.Second
 	deliveryTimeout = 90 * time.Second
@@ -109,17 +107,19 @@ func resolveBinary() error {
 
 func resolveRepoRoot() error {
 	// `go test` runs with the package directory as the working directory, so the
-	// repository root is two levels up. The base layer is what gets checked
-	// rather than the directory itself: every collector this harness starts
-	// composes config/base.yaml with a role profile, and a checkout missing them
-	// should fail here with a sentence rather than inside a config loader.
+	// repository root is two levels up. The role profiles are what get checked
+	// rather than the directory itself: each is the first of the two configs a
+	// collector under test composes, and a checkout missing one should fail here
+	// with a sentence rather than inside a config loader.
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		return fmt.Errorf("resolving the repository root: %w", err)
 	}
-	base := filepath.Join(root, "config", "base.yaml")
-	if _, err := os.Stat(base); err != nil {
-		return fmt.Errorf("expected the shared base layer at %s: %w", base, err)
+	for _, role := range []string{"edge.yaml", "gateway.yaml"} {
+		profile := filepath.Join(root, "config", role)
+		if _, err := os.Stat(profile); err != nil {
+			return fmt.Errorf("expected the %s role profile at %s: %w", role, profile, err)
+		}
 	}
 	repoRoot = root
 	return nil

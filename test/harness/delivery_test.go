@@ -30,23 +30,20 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		name:     "gateway",
 		stateDir: state,
 		env: map[string]string{
-			"OTELBOX_GATEWAY_TOKEN_FILE":   tokenFile,
-			"OTELBOX_GATEWAY_STORAGE":      filepath.Join(state, "gateway-storage"),
+			"OTELBOX_INGEST_TOKEN_FILE":    tokenFile,
+			"OTELBOX_STORAGE_DIR":          filepath.Join(state, "gateway-storage"),
 			"OTELBOX_CI_SINK":              sink,
 			"OTELBOX_CI_GATEWAY_CERT_FILE": chain.certFile,
 			"OTELBOX_CI_GATEWAY_KEY_FILE":  chain.keyFile,
-			// The CI overlay drops all four from every pipeline, so none is
-			// reached — but expansion runs over the merged map, and an unset
-			// variable fails the load as a validation error naming the
-			// component rather than the variable.
-			"OTELBOX_GATEWAY_DOCKER_ENDPOINT":    "unix:///var/run/docker.sock",
-			"OTELBOX_GATEWAY_BACKEND_1_ENDPOINT": "127.0.0.1:34398",
-			"OTELBOX_GATEWAY_BACKEND_2_ENDPOINT": "127.0.0.1:34399",
-			"OTELBOX_GATEWAY_BACKEND_2_TOKEN":    "unused-in-ci",
+			// The CI overlay takes both backend exporters out of every pipeline,
+			// so neither endpoint is dialled — but expansion runs over the merged
+			// map and a key cannot be removed by a later layer, so both are still
+			// expanded at load.
+			"OTELBOX_BACKEND_1_ENDPOINT": "127.0.0.1:34398",
+			"OTELBOX_BACKEND_2_ENDPOINT": "127.0.0.1:34399",
 		},
 		configs: []string{
-			configPath("config", "base.yaml"),
-			configPath("config", "examples", "gateway.yaml"),
+			configPath("config", "gateway.yaml"),
 			configPath("test", "config", "gateway-ci.yaml"),
 		},
 	})
@@ -61,19 +58,18 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 				// the happy-path edge would otherwise replay under the second
 				// edge's credential, and assertion 3 would report on the wrong
 				// record.
-				"OTELBOX_EDGE_STORAGE":  filepath.Join(state, name+"-storage"),
-				"OTELBOX_EDGE_ENDPOINT": gatewayEndpoint,
-				"OTELBOX_EDGE_TOKEN":    token,
-				// The trust anchor for the leg the role layer keeps at
+				"OTELBOX_STORAGE_DIR":       filepath.Join(state, name+"-storage"),
+				"OTELBOX_UPSTREAM_ENDPOINT": gatewayEndpoint,
+				// A header file per edge, so the credential the second edge
+				// presents is the only thing that differs between the two runs.
+				"OTELBOX_UPSTREAM_AUTH_HEADER_FILE": writeAuthHeaderFile(t,
+					filepath.Join(state, name+"-auth-header"), token),
+				// The trust anchor for the leg the role profile keeps at
 				// `insecure: false`.
 				"OTELBOX_CI_EDGE_CA_FILE": chain.caFile,
-				// The ntp receiver survives the CI overlay in the config but
-				// not in any pipeline, so this is expanded and never dialled.
-				"OTELBOX_EDGE_NTP_ENDPOINT": "127.0.0.1:34123",
 			},
 			configs: []string{
-				configPath("config", "base.yaml"),
-				configPath("config", "examples", "edge.yaml"),
+				configPath("config", "edge.yaml"),
 				configPath("test", "config", "edge-ci.yaml"),
 			},
 		})
@@ -147,7 +143,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		// leaked the value into a summary attribute, a resource attribute or a
 		// neighbouring batch would still be a leak.
 		if sinkContains(t, sink, secret) {
-			t.Fatalf("the secret value reached %s — redaction/secrets did not strip it. The record arrived (%s), so the pipeline ran; the pattern list in config/base.yaml is what failed",
+			t.Fatalf("the secret value reached %s — redaction/secrets did not strip it. The record arrived (%s), so the pipeline ran; the pattern list the role profiles carry is what failed",
 				sink, redactionMarker)
 		}
 	})
@@ -224,4 +220,17 @@ func writeTokenFile(t *testing.T, path, token string) {
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 		t.Fatalf("could not write the gateway's token allowlist to %s: %v", path, err)
 	}
+}
+
+// The client credential, in the format headerssetterextension parses — and it is
+// not the allowlist format above. The whole file is TrimSpace'd and nothing
+// prepends a scheme, so the scheme is written out and a trailing comment would
+// travel to the gateway as part of the header value.
+func writeAuthHeaderFile(t *testing.T, path, token string) string {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte("Bearer "+token+"\n"), 0o600); err != nil {
+		t.Fatalf("could not write the edge's authorization header file to %s: %v", path, err)
+	}
+	return path
 }
