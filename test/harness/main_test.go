@@ -15,10 +15,10 @@ import (
 // test` reports its own 1 for anything the test binary exits non-zero with, so
 // a distinction here would be invisible to every caller. The stderr message is
 // the whole contract.
-// Ports are 34xxx throughout, chosen to miss both real deployments: the
-// workstation edge holds 4317/4318/13133/8888 and the server gateway holds
-// 14317-14322/8888/8889. A developer running their own edge must be able to run
-// this test.
+// Ports are 34xxx throughout, chosen to miss every real deployment: the
+// workstation edge holds 4317/4318/8888, the server gateway 14319/14320/8889
+// and the host agent 8890. A developer running their own edge must be able to
+// run this test.
 const (
 	edgeHTTPPort    = 34318
 	edgeHealthPort  = 34133
@@ -29,7 +29,7 @@ const (
 
 	// The coupling scenario runs its own gateway, on its own listeners, so a
 	// process left behind by the delivery test cannot silently serve it.
-	couplingGatewayHTTPPort    = 34352
+	couplingGatewayHTTPPort    = 34348
 	couplingGatewayMetricsPort = 34899
 
 	healthyBackendEndpoint    = "127.0.0.1:34361"

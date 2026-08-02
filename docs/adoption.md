@@ -2,10 +2,9 @@
 
 This document is the handover for the one piece of work this repository does
 not do itself: getting `remote_server_setup` and `devbox-setup` off their
-pre-split arrangements and onto this artefact. The server half is done
-(uncommitted in that repository); the workstation half has not been started. It
-is written for a session with none of the
-context that produced it — it states reasoning, not just steps, and where a
+pre-split arrangements and onto this artefact. Both halves are now written and
+uncommitted in their own repositories. It is written for a session with none of
+the context that produced it — it states reasoning, not just steps, and where a
 consuming repository's own procedure is involved it names the file and stops,
 per the scope boundary in `AGENTS.md`: this repository owns the artefact and
 the shared configuration layer, not the deployment.
@@ -19,6 +18,51 @@ files, `otelcol-otelbox_config.tar.gz`, and `image-digest.txt` holding
 checksums of the two assets it installs — the `darwin/arm64` binary and the
 configuration bundle — so no `PENDING-FIRST-CI-PUBLISH` placeholders remain.
 
+**`2.0.0` is declared in `builder.yaml` and not yet released.** The number is
+settled and the major is deliberate — see `AGENTS.md` "Version and release
+flow". Steps one and two below describe the 1.0.0 adoption and stand as written;
+step three is new and depends on the next release existing. Read every pinned
+version and digest in this document as a record of what was current when it was
+written, not as a value to copy — see the warning in step one.
+
+**One thing has changed under this whole document.** The reference profiles are
+no longer maintained as mirrors of the deployed copies (`AGENTS.md`, "The
+reference profiles are demonstrations, not mirrors"). Where a step below says
+"read it against `config/examples/…` side by side", that is still the right
+thing to do for the *shape* — pipeline order, processor set, queue and WAL
+structure — but a literal difference in an endpoint, a component instance name
+or a credential path is now expected rather than a defect. In particular the
+gateway's exporters and WALs are now named `backend_1` and `backend_2` here,
+and the deployed copy is free to keep its own names.
+
+**And three things that are not a matter of taste.** They are why 2.0.0 is a
+major, and each has to land in the same change as the binary upgrade rather than
+after it.
+
+1. **`health_check` is unlinked**; all three roles moved to `healthcheckv2`. A
+   deployed role layer still naming it will not drift quietly — the collector
+   refuses to load an unknown extension type. Three consequences: the type
+   becomes `healthcheckv2` and needs `use_v2: true` beside it; the served path
+   moves from `/` to `/status`, so any probe, `curl`, readiness check or monitor
+   pointed at the old one starts getting 404; and the bind address is now
+   `${env:OTELBOX_<ROLE>_HEALTH_ENDPOINT}`, a variable the supervisor has to
+   render. `config/examples/*.yaml` carry the full block, with the two traps
+   (a bare `grpc:` key opens a port; without `use_v2` the v1 responder answers
+   everything) commented at the point where they bite.
+2. **The gateway has one OTLP receiver and one allowlist.** `otlp/public` and
+   `otlp/local` are merged into `otlp` on 14319/14320; 14321/14322 are free and
+   `OTELBOX_GATEWAY_LOCAL_TOKEN_FILE` no longer exists. Every host-local
+   producer — the host agent, the reverse proxy — moves to the remaining
+   listener with a token added to the single allowlist file. A receiver carries
+   exactly one authenticator (`configauth.Config` holds one `AuthenticatorID`),
+   so a deployment that genuinely wants two independent credential sets keeps
+   two receivers of its own; the profile no longer demonstrates that, because
+   the second set bought separation of revocation and nothing else.
+3. **Every listener binds `${env:OTELBOX_<ROLE>_BIND_HOST}`**, port literal —
+   three new variables, one per role, each a load error if unset. The port
+   numbers are unchanged, so a deployment that renders the variable to whatever
+   it binds today changes nothing else.
+
 ## Estate view
 
 ```mermaid
@@ -30,18 +74,18 @@ flowchart LR
 
     subgraph Net["Public internet"]
         direction TB
-        TLS["TLS + Bearer token<br/>otlp_grpc/gateway → otlp/public"]
+        TLS["TLS + Bearer token<br/>otlp_grpc/gateway → otlp"]
     end
 
     subgraph SRV["Server — remote_server_setup"]
         Proxy["reverse proxy<br/>(TLS termination)"]
         Gateway["gateway role<br/>otelcol-otelbox"]
         Proxy -->|loopback, TLS terminated| Gateway
-        Gateway -->|"WAL: file_storage/signoz"| SQ[(SigNoz WAL)]
-        Gateway -->|"WAL: file_storage/clickstack"| CQ[(ClickStack WAL)]
-        SQ --> SigNoz["SigNoz backend"]
-        CQ --> ClickStack["ClickStack backend"]
-        Local["co-located host workload"] -->|"loopback, unauthenticated<br/>otlp/local"| Gateway
+        Gateway -->|"WAL per backend"| SQ[(backend 1 WAL)]
+        Gateway -->|"WAL per backend"| CQ[(backend 2 WAL)]
+        SQ --> B1["backend 1"]
+        CQ --> B2["backend 2"]
+        Local["host-local producer"] -->|"authenticated<br/>same otlp receiver"| Gateway
     end
 
     Edge -->|"gRPC :443, TLS verified"| TLS
@@ -51,19 +95,20 @@ flowchart LR
     class WS,SRV repo
 ```
 
-Trust boundary: the edge↔gateway leg is the only one crossing a network the
-operator does not control, and it is the only leg that is both TLS-verified
-and Bearer-authenticated. Every other leg — edge receiver to local apps,
-gateway to its backends, `otlp/local` to a co-located workload — is
-loopback-only, so reachability rather than a credential is the control (the
-one deliberate exception, `insecure: true` on a loopback leg, is fenced into
-`test/config/edge-ci.yaml`; see `AGENTS.md` "Conventions"). Every leg leaving
-a process, authenticated or not, carries its own on-disk `file_storage` queue:
-one on the edge, one per backend on the gateway. `otlp/public` and
-`otlp/local` are drawn as separate arrows into the gateway box because they
-are separate receivers, but they are not separate queues — both feed the same
-three pipelines and therefore the same WALs and the same sending queues (see
-"otlp/local and infrastructure telemetry" below).
+Trust boundary: the edge↔gateway leg is the one this repository can reason
+about, because its credential is a bare bearer token in a header, so
+verification stays on there, and the integration test mints a CA per run rather
+than turning it off (see `AGENTS.md` "Conventions"). The gateway's one receiver
+authenticates every request against its allowlist rather than relying on where
+its socket is reachable from; whether the remaining legs — gateway to its
+backends, host agent to the gateway — also carry transport security is the
+deployment's decision, not this repository's. Every leg leaving a process,
+authenticated or not, carries its own on-disk `file_storage` queue: one on the
+edge, one per backend on the gateway. The remote and host-local arrows are drawn
+separately because they come from different places, not because they land on
+different receivers — they land on the same one, and share the same pipelines,
+WALs and sending queues (see "Host-local ingest and infrastructure telemetry"
+below).
 
 ## Order, and why
 
@@ -133,10 +178,12 @@ each edit, which the diff does not carry.
     (`AGENTS.md` "Configuration layering"), every key in both blocks must
     stay restated — dropping one would silently pull in the base layer's
     workstation-sized value instead.
-  - `otlp_grpc/signoz` and `otlp_grpc/clickstack` already use the canonical
-    exporter name — this file does not carry the `otlp` → `otlp_grpc` rename
-    that `devbox-setup` still needs; that piece of the "still outstanding"
-    renames in `AGENTS.md` applies to the edge role only.
+  - The backend exporters already use the canonical `otlp_grpc` type — this
+    file does not carry the `otlp` → `otlp_grpc` rename that `devbox-setup`
+    still needs; that piece of the "still outstanding" renames in `AGENTS.md`
+    applies to the edge role only. Their *instance* names are this
+    repository's business only inside `config/examples/gateway.yaml`, which now
+    calls them `backend_1` and `backend_2`.
   - `redaction/secrets` is currently **absent** from this file and from every
     pipeline's processor list. This is the one substantive gap, not a
     renaming exercise: the running gateway redacts nothing today. Adopting
@@ -145,10 +192,10 @@ each edit, which the diff does not carry.
     layer, that is the whole point of the base layer existing) and every
     pipeline's processor list must add it between `memory_limiter` and
     `batch`, matching `config/examples/gateway.yaml`'s `pipelines:` block.
-    This matters more here than it would on the edge, because `otlp/local`
-    accepts telemetry — today, the reverse proxy's own traces — that never
-    passed through an edge and so was never redacted anywhere upstream.
-  - `file_storage/signoz` and `file_storage/clickstack` `max_size` is
+    This matters more here than it would on the edge, because the gateway
+    accepts host-local telemetry — today, the reverse proxy's own traces — that
+    never passed through an edge and so was never redacted anywhere upstream.
+  - The per-backend `file_storage` `max_size` is
     currently `5368709120` (5 GiB) in this file against `10737418240`
     (10 GiB) in the reference profile, and `queue_size` is `500000` items
     against `9663676416` bytes with `sizer: bytes`. The reference profile's
@@ -182,7 +229,10 @@ The Compose deployment shape, host networking, the loopback bindings on
 14319–14322/8889, the ingest token file and its `0400` mode, the backend
 containers, `otel-gateway.env.j2`, `ingest.tokens.j2`, and the Ansible Vault
 structure. None of those are this repository's concern and none of them need
-to move for this adoption.
+to move for **this** adoption — 1.0.0's. 2.0.0 does move two of them: the
+14321/14322 bindings go away with the second receiver, and the second token file
+merges into the first (see "And three things that are not a matter of taste"
+above).
 
 ## Step two — `devbox-setup`
 
@@ -195,9 +245,11 @@ to move for this adoption.
   component manifests: `otelcol-edge/builder.yaml` links 18 receivers, 8
   processors, 3 exporters, 7 extensions, 5 connectors (41 total, per its
   README); `otelcol-otelbox`'s `builder.yaml` links the identical set plus
-  one — `prometheusreceiver`, wired only by the gateway role, for its own
-  self-scrape. **Nothing devbox-setup currently links is missing from this
-  artefact.** Adopting it is a pure consolidation, not a component
+  six — `prometheusreceiver` and `journaldreceiver`, `oidcauthextension` and
+  `oauth2clientauthextension`, `groupbyattrsprocessor` and
+  `cumulativetodeltaprocessor`. **Nothing devbox-setup currently links is
+  missing from this artefact.** Adopting it is a pure consolidation, not a
+  component
   reduction: every receiver, processor, exporter, extension and connector
   `otelcol-edge` builds today — including ones not yet wired into any
   pipeline, such as `hostmetricsreceiver`, `filelogreceiver`,
@@ -253,7 +305,7 @@ to move for this adoption.
   `config.gateway.yaml:30`, `otlp/gateway` → `otlp_grpc/gateway`, referenced
   again in the three pipelines' `exporters:` lists). `AGENTS.md` "Canonical
   component types" calls this out as one change, to be made here. The
-  deprecated names still load in v0.156.0, so this is not urgent on its own,
+  deprecated names still load, so this is not urgent on its own,
   but doing it while touching these files anyway avoids a second edit later.
   Whether these two files stay hand-maintained copies in `devbox-setup`, or
   are replaced by unpacking the release's `otelcol-otelbox_config.tar.gz`
@@ -291,6 +343,63 @@ launchd going on running the one Homebrew did not install — so
 actually collecting anything. The formula's audience is machines the
 playbook does not manage, plus manual use; a `devbox-setup`-managed
 workstation is neither.
+
+## Step three — `remote_server_setup`'s `telemetry_source` role
+
+**New in 2.0.0, and blocked on it being released.** The host-agent role already
+exists in that repository and is deployed; what 2.0.0 changes is that the
+collector it pins can finally carry the pieces the role had to defer. Six
+edits, and `config/examples/host-agent.yaml` is the reference for all of them:
+
+- **`telemetry_source_version`** and the `telemetry_source_architectures`
+  checksum move to 2.0.0's published asset. The comment above that checksum
+  explains why it is pinned here rather than fetched alongside the binary.
+- **`telemetry_source_journal_enabled` becomes `true`.** Its current value is
+  `false` for one stated reason — the pinned collector carries no journald
+  receiver — and 2.0.0 removes it. The role also reads the components out of
+  the installed binary and refuses to render the receiver unless it is
+  genuinely there, so the gate stays honest either way.
+- **The exporter moves to the gateway's one receiver.** `otlp/local` on
+  14321/14322 is gone; the agent dials the remaining listener (conventionally
+  `:14319`) and its credential becomes a line in the gateway's single allowlist
+  file rather than one of its own. Two variables to render on this side:
+  `OTELBOX_HOST_AGENT_BIND_HOST` for the self-metrics listener, and the changed
+  `OTELBOX_HOST_AGENT_GATEWAY_ENDPOINT`.
+- **The sending queue needs an explicit `batch:` block.** Omitting the key
+  leaves no batcher at all, so the payload is unbounded in bytes and a large
+  scrape can exceed the gateway's 32 MiB receive limit — a record over the
+  sender's maximum is dropped by the sender, not split. The profile's values
+  (`sizer: bytes`, `min_size` 1 MiB, `max_size` 8 MiB) keep the invariant
+  `batch.max_size` < `max_recv_msg_size_mib` ≤ `max_request_body_size`.
+- **A `file_storage` extension for the journald cursor**, named in the
+  receiver's `storage:` key and added to `service::extensions`. This is the one
+  substantive gap rather than a rename: without it the receiver gets a no-op
+  persister whose `Get` returns nil, so no cursor exists and every `journalctl`
+  respawn either loses records or replays the whole journal. It is a cursor,
+  not a sending queue — the in-memory queue argument in the template stands
+  untouched.
+- **Two renames**, `hostmetrics` → `host_metrics` and `resourcedetection` →
+  `resource_detection`. Deprecated aliases still load, so this is not urgent on
+  its own; doing it while touching the template anyway avoids a second edit.
+
+One thing to settle before or during this, because it is a working defect and
+not a rename: **the exporter as the template writes it cannot start.** It pairs
+`auth: authenticator: bearertokenauth/gateway` with `tls: insecure: true` on a
+gRPC exporter. `bearertokenauth`'s gRPC credential returns
+`RequireTransportSecurity()` true unconditionally, and `configgrpc` attaches it
+whatever the transport is, so gRPC refuses the dial with "the credentials
+require transport level security" — after `validate` has passed.
+
+`config/examples/host-agent.yaml` now demonstrates the fix rather than
+mirroring the defect: `headers_setter` with `value_file:`, which returns false
+from `RequireTransportSecurity`, uses the same fsnotify-backed watcher so
+rotation still works, and leaves the transport decision to the deployment. **The
+credential file's format changes with it** — `value_file:` prepends no scheme
+and `TrimSpace`s the whole file, so it must hold literally `Bearer <token>`,
+where `bearertokenauth`'s `filename:` held a bare token. That is why the profile
+renamed the variable to `OTELBOX_HOST_AGENT_AUTH_HEADER_FILE` instead of
+changing a file's meaning under an unchanged name; do the same in the template
+rather than reusing the old variable. See `docs/host-agent.md`.
 
 ## The stale runbook
 
@@ -335,31 +444,33 @@ step two, once the edge side it describes has actually changed.
   and should reference the queue-size metrics in `docs/gateway.md`
   "Verifying delivery" as the leading indicator to watch for, rather than
   only checking for eventual failure.
-- **§7 "Validate and start the gateway"** is largely unaffected — it invokes
-  `ansible-playbook playbooks/telemetry_gateway.yml`, and the image swap and
-  config changes happen inside that role, not in this runbook's own
-  commands. Confirm after step one that its `ss` listener check and
-  self-metrics `curl` still target the right ports (14319/14320/14317/24317,
-  8889) — they should, since none of those port numbers change.
+- **§7 "Validate and start the gateway"** is largely unaffected by step one —
+  it invokes `ansible-playbook playbooks/telemetry_gateway.yml`, and the image
+  swap and config changes happen inside that role, not in this runbook's own
+  commands. Its `ss` listener check and self-metrics `curl` still target the
+  right ports (14319/14320/14317/24317, 8889) for the 1.0.0 adoption. **Taking
+  2.0.0 does move them**: 14321 and 14322 disappear with the second receiver, so
+  a listener check still expecting them fails on a correctly deployed gateway.
 
 ## Open questions to carry forward
 
 These are named, not answered. A future session should read them before
 proceeding, not re-derive them.
 
-- **The version bump for this work.** `dist.version` in `builder.yaml` is
-  hand-edited; nothing computes it. If adopting the base layer changes the
-  shape of `config/` for the gateway (adding `redaction/secrets` to its
-  pipelines is exactly such a shape change from the consuming side, even
-  though nothing in this repository's own `config/` changes), the bump rules
-  in `README.md` "Release flow" say a **major** bump is warranted when *a
-  consuming repository has to change its role configuration*. But the
-  gateway's own configuration shape change here is being driven by
-  adoption, not by a prior release of this artefact — whether that still
-  counts, or whether the existing `1.0.0` already covers it because nothing
-  in `config/` itself moved, is not resolved by the existing bump rules as
-  written. Leave the choice open; it depends on how literally "consuming
-  repository has to change its role configuration" is read.
+- **What a bump is decided by — settled, and worth keeping as the worked
+  example.** `dist.version` is hand-edited; nothing computes it. The question
+  that used to sit here was whether a shape change *driven by adoption* counts
+  as a major when nothing in this repository's own `config/` moved — adding
+  `redaction/secrets` to the deployed gateway's pipelines being the case in
+  point. It no longer needs answering, because 2.0.0 is a major on the plain
+  reading: `config/` itself changed shape, the gateway's two receivers became
+  one and `health_check` stopped existing, so a deployment that upgrades the
+  binary and leaves its configuration alone does not merely drift — it fails to
+  load. The rule that generalises: **ask what breaks if a consumer takes the new
+  binary and changes nothing.** Nothing breaking is a minor at most, however
+  much work went into the release — which is why 1.1.0, a whole new role profile
+  plus five newly linked components, was correctly a minor. See `AGENTS.md`
+  "Version and release flow".
 - **The Renovate gap.** `renovate.json5` manages the `gomod` pins in
   `builder.yaml` but has no reach into `dist.version` — no `gomod:` key, no
   `v` prefix for its regex to match. An upstream Renovate PR can merge,
@@ -367,20 +478,22 @@ proceeding, not re-derive them.
   `v1.0.0`'s release already exists. A future session picking up an
   upstream bump should check `dist.version` was actually incremented before
   assuming the merge shipped anything.
-- **`otlp/local` and infrastructure telemetry.** The gateway's
-  unauthenticated loopback receiver exists for co-located producers —
-  today, only the reverse proxy's own trace export. The intended design is
-  a dedicated least-privilege host collector
-  (`remote_server_setup/docs/architecture/host-telemetry-boundary.md`,
-  status "planned"). The unresolved question is queue isolation, not
-  authentication: `otlp/local` and `otlp/public` are wired into the same
-  three pipelines, so they share the same exporters, the same `file_storage`
-  WALs and the same sending queues as authenticated edge telemetry, and with
-  `block_on_overflow: true` a local flood can back-pressure every edge
-  behind it. Separate pipelines would not fix this on their own — an
-  exporter named in two pipelines is one instance with one queue; separate
-  exporter *instances*, each with its own `file_storage`, would. This
-  becomes more pressing once the current redaction gap in
-  `roles/otel_gateway/files/config.yaml` is closed (see step one), because
-  at that point `otlp/local` traffic is redacted like everything else but
-  still shares its queue — record the question, do not decide it here.
+- **Host-local ingest and infrastructure telemetry.** Co-located producers —
+  today the host agent and the reverse proxy's own trace export — now share the
+  gateway's one authenticated receiver with every remote edge. The intended
+  design is a dedicated least-privilege host collector
+  (`remote_server_setup/docs/architecture/host-telemetry-boundary.md`, status
+  "planned"). The unresolved question is **queue isolation, and collapsing the
+  receivers neither caused nor worsened it**: the two receivers already fed the
+  same three pipelines, so host-local traffic already shared the exporters, the
+  `file_storage` WALs and the sending queues with edge telemetry, and with
+  `block_on_overflow: true` a local flood can back-pressure every edge behind
+  it. Separate pipelines would not fix this on their own — an exporter named in
+  two pipelines is one instance with one queue; separate exporter *instances*,
+  each with its own `file_storage`, would. What the collapse did remove is
+  separation of *revocation*: one token file now, so a compromised host-local
+  credential is revoked in the same list as an edge's. This becomes more
+  pressing once the current redaction gap in
+  `roles/otel_gateway/files/config.yaml` is closed (see step one), because at
+  that point host-local traffic is redacted like everything else but still
+  shares its queue — record the question, do not decide it here.

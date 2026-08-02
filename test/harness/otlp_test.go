@@ -122,10 +122,21 @@ var (
 
 // Returns the HTTP status the collector gave, or 0 for a transport error —
 // curl's `000` in the shell harness this replaced. Callers distinguish the two:
-// "the listener refused us" is not "the listener answered".
-func postLogs(client *http.Client, port int, payload []byte) (int, string, error) {
+// "the listener refused us" is not "the listener answered". An empty token
+// sends no authorization header, which is what the edge's loopback receiver
+// expects and what the gateway's 401 precondition needs.
+func postLogs(client *http.Client, port int, token string, payload []byte) (int, string, error) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/logs", port)
-	response, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	response, err := client.Do(request)
 	if err != nil {
 		return 0, "", err
 	}
@@ -144,7 +155,7 @@ func postLogs(client *http.Client, port int, payload []byte) (int, string, error
 func sendOrFail(t *testing.T, description string, port int, payload []byte) bool {
 	t.Helper()
 
-	status, body, err := postLogs(sendClient, port, payload)
+	status, body, err := postLogs(sendClient, port, "", payload)
 	switch {
 	case err != nil:
 		t.Errorf("%s: the OTLP receiver on port %d did not answer: %v", description, port, err)
@@ -162,7 +173,7 @@ func sendOrFail(t *testing.T, description string, port int, payload []byte) bool
 var emptyLogsPayload = []byte(`{"resourceLogs":[]}`)
 
 func gatewayUnauthenticatedStatus(port int) int {
-	status, _, err := postLogs(probeClient, port, emptyLogsPayload)
+	status, _, err := postLogs(probeClient, port, "", emptyLogsPayload)
 	if err != nil {
 		return 0
 	}
@@ -186,8 +197,11 @@ func endpointAccepts(endpoint string) bool {
 	return true
 }
 
+// A profile that lost `use_v2` would still answer 200 here: the v1 responder
+// registers `/` on an http.ServeMux, which subtree-matches `/status`. So this
+// proves the health endpoint is up, not that it is the v2 responder.
 func edgeHealthy() bool {
-	response, err := probeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", edgeHealthPort))
+	response, err := probeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/status", edgeHealthPort))
 	if err != nil {
 		return false
 	}

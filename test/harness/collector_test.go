@@ -127,6 +127,13 @@ func (c *collector) firstLogLine(needles ...string) string {
 	return ""
 }
 
+// grpc-go treats a rejected certificate as an ordinary export failure and keeps
+// retrying, so unlike a bad config it never kills the process — without this a
+// certificate fault reaches the output as a bare timeout with no cause named.
+func (c *collector) tlsFault() string {
+	return c.firstLogLine("authentication handshake failed", "x509:", "remote error: tls:")
+}
+
 type diagnosticSection struct {
 	title string
 	body  string
@@ -166,6 +173,12 @@ func poll(timeout time.Duration, watch *collector, what string, ready func() boo
 				watch.name, what, watch.logTail(20))
 		}
 		if time.Now().After(deadline) {
+			if watch != nil {
+				if line := watch.tlsFault(); line != "" {
+					return fmt.Errorf("timed out after %s waiting for %s; the %s collector's log names a TLS fault, which is the likelier cause:\n%s",
+						timeout, what, watch.name, line)
+				}
+			}
 			return fmt.Errorf("timed out after %s waiting for %s", timeout, what)
 		}
 		time.Sleep(pollInterval)

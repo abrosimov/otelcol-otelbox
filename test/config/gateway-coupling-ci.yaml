@@ -14,26 +14,41 @@
 # is asserted: the claim is that a *full* queue couples the backends, not how
 # long 9 GiB takes to fill at 5s a batch.
 #
-# Environment: OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
-# CLICKSTACK_INGESTION_API_KEY (unused, but expanded at load time),
-# OTELBOX_CI_HEALTHY_ENDPOINT and OTELBOX_CI_STALLED_ENDPOINT.
+# Environment, minus OTELBOX_GATEWAY_BIND_HOST and
+# OTELBOX_GATEWAY_HEALTH_ENDPOINT, which this layer replaces every reference to:
+# OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
+# OTELBOX_GATEWAY_DOCKER_ENDPOINT and OTELBOX_GATEWAY_BACKEND_2_TOKEN (the last
+# two unused here, but expanded at load time), OTELBOX_CI_HEALTHY_ENDPOINT and
+# OTELBOX_CI_STALLED_ENDPOINT.
+
+extensions:
+  healthcheckv2:
+    http:
+      # A port of its own inside the 34xxx block: this gateway runs alongside
+      # the delivery test's, and two processes cannot share one listener.
+      endpoint: 127.0.0.1:34135
 
 receivers:
-  otlp/public:
+  # `auth:` is inherited from the role layer and still enforced — a later layer
+  # cannot remove a key — so the scenario posts to 34348 with the ingest token.
+  otlp:
     protocols:
       grpc:
         endpoint: 127.0.0.1:34347
       http:
         endpoint: 127.0.0.1:34348
-  # The scenario posts here unauthenticated: it is about queues, and the token
-  # check would only add an unrelated way to fail. `auth:` on otlp/public is
-  # inherited and still enforced.
-  otlp/local:
-    protocols:
-      grpc:
-        endpoint: 127.0.0.1:34351
-      http:
-        endpoint: 127.0.0.1:34352
+
+  # A literal target, because the harness supplies no OTELBOX_GATEWAY_BIND_HOST
+  # and expansion runs over the merged map. Nothing scrapes it: the pipeline
+  # below drops this receiver, so it is configured and never built.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otel-gateway
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 127.0.0.1:34899
 
 processors:
   # All three keys restated because maps merge one by one; only the timeout is
@@ -44,13 +59,13 @@ processors:
     send_batch_max_size: 8192
 
 exporters:
-  otlp_grpc/signoz:
+  otlp_grpc/backend_1:
     endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
     sending_queue:
       # Eight times the other queue: this backend stays up and must never be the
       # thing that blocks, or a stall could not be attributed to its neighbour.
       queue_size: 16777216
-  otlp_grpc/clickstack:
+  otlp_grpc/backend_2:
     endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
     sending_queue:
       # Cannot usefully go lower: upstream refuses a queue below the batcher's
@@ -70,9 +85,10 @@ service:
   pipelines:
     # Repointed rather than deleted, because a later layer cannot remove a key:
     # left alone, `docker_stats` would open a Docker socket the runner does not
-    # have. Every other pipeline is inherited whole, so the fan-out under test is
-    # the deployed one.
+    # have, and `prometheus/self` would push a steady metrics stream through the
+    # very queues whose fill rate this scenario measures. Every other pipeline is
+    # inherited whole, so the fan-out under test is the deployed one.
     metrics/self:
-      receivers: [otlp/local]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
-      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]

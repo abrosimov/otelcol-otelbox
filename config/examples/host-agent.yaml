@@ -1,0 +1,273 @@
+# otelbox — HOST AGENT ROLE LAYER (reference profile, not deployed).
+#
+#   otelcol-otelbox --config config/base.yaml --config config/examples/host-agent.yaml
+#
+# It demonstrates what the host-agent role can do and how it is configured; it
+# is not a copy of any deployment, so anything naming a neighbour, a socket or
+# a credential is an ${env:...} reference the supervisor fills in. The shape is
+# the part worth preserving: the host's own signals, gathered as a plain host
+# process because a container sees neither /proc nor the journal nor a
+# loopback-only admin endpoint, and exported to an authenticated gateway.
+#
+# Environment: OTELBOX_HOST_AGENT_{BIND_HOST,AUTH_HEADER_FILE,STORAGE,
+# GATEWAY_ENDPOINT,DOCKER_ENDPOINT,HEALTH_ENDPOINT,SCRAPE_TARGET_1,
+# SCRAPE_TARGET_2,JOURNAL_UNIT_1,JOURNAL_UNIT_2}.
+
+extensions:
+  # The same health check the other two roles wire, on the same keys. Its
+  # `development` stability was accepted knowingly; see config/examples/edge.yaml
+  # for the reasoning behind each setting here.
+  healthcheckv2:
+    # Required. Without it the extension serves the v1 responder instead, which
+    # answers 200 on `/` and on every path beneath it, and ignores the keys below.
+    use_v2: true
+    http:
+      # Deployment data. This role shares a host with the gateway, so the two
+      # health endpoints cannot both take a default.
+      endpoint: ${env:OTELBOX_HOST_AGENT_HEALTH_ENDPOINT}
+      status:
+        enabled: true
+        path: /status
+      # Serves the merged configuration with every ${env:...} expanded, the
+      # gateway credential's path among them.
+      config:
+        enabled: false
+    # NO `grpc:` KEY, and the omission is the setting: there is no
+    # `enabled: false` for that responder, and writing the key even bare opens
+    # one on 127.0.0.1:13132.
+    component_health:
+      # Buys 500 while a component sits in a permanent error, which upstream
+      # reports only for a failed start or shutdown. Not a delivery check: this
+      # role's queue drops on overflow rather than blocking, so a gateway it
+      # cannot reach costs metrics and leaves this endpoint at 200.
+      include_permanent_errors: true
+      # Off, and this role is the clearest case: a scrape that fails because a
+      # neighbour restarted is not the agent being unhealthy.
+      include_recoverable_errors: false
+
+  # `headers_setter`, not `bearertokenauth`, and the difference is load-bearing:
+  # bearertokenauth's gRPC credential returns RequireTransportSecurity() true
+  # unconditionally, so pairing it with `tls: insecure: true` below passes
+  # `validate` and then fails the exporter's start. This one returns false.
+  #
+  # Three traps, each silent. The file must contain literally `Bearer <token>`
+  # — nothing prepends a scheme here, unlike bearertokenauth's `filename:`. The
+  # whole file is TrimSpace'd rather than parsed line by line, so a trailing
+  # comment becomes part of the header value. And do not reach for
+  # `additional_auth:` to chain bearertokenauth back in: RequireTransportSecurity
+  # then delegates to it and returns true again.
+  #
+  # `headers_setter` is alpha where `bearertokenauth` is beta. The receiving
+  # side keeps bearertokenauth and is unaffected — the server path validates a
+  # header and never inspects the transport.
+  headers_setter/gateway:
+    headers:
+      - action: upsert
+        key: authorization
+        # Same fsnotify-backed watcher bearertokenauth's `filename:` uses, so
+        # rotation still takes effect without a restart.
+        value_file: ${env:OTELBOX_HOST_AGENT_AUTH_HEADER_FILE}
+
+  # The journald cursor. Without a storage extension the receiver gets a no-op
+  # persister whose `Get` returns nil, so no cursor is kept and every
+  # `journalctl` respawn either loses records or replays the whole journal.
+  #
+  # This is a cursor, not a sending queue. The exporter below keeps its queue in
+  # memory deliberately, and that argument is untouched by this.
+  file_storage/journald:
+    directory: ${env:OTELBOX_HOST_AGENT_STORAGE}/journald
+    create_directory: true
+    fsync: true
+
+receivers:
+  host_metrics:
+    collection_interval: 30s
+    scrapers:
+      # v0.157.0 made the per-core `cpu` attribute on `system.cpu.time` opt-in,
+      # and it is deliberately not re-enabled: aggregate CPU time by state is
+      # what this host is asked, at a fraction of the series count.
+      cpu:
+      disk:
+        # Identity here is the device name alone, so a renumbered loop device
+        # is a permanent new series — one per snap refresh, forever.
+        exclude:
+          match_type: regexp
+          devices:
+            - ^loop\d+$
+      load:
+      memory:
+      network:
+      paging:
+      # Aggregate process counts read from /proc/stat, which any account may
+      # read. This is deliberately not the `process` scraper, which reports
+      # per-process CPU, memory and I/O.
+      #
+      # That one is left out rather than muted. It reads /proc/<pid>/io and
+      # dereferences /proc/<pid>/exe, and the kernel gates both behind a ptrace
+      # access-mode check, so an unprivileged agent gets complete data for its
+      # own two or three processes and permission errors for everything that
+      # matters. The receiver offers mute_process_io_error and friends to
+      # silence those errors, which would leave a scraper that looks healthy and
+      # reports almost nothing. See AGENTS.md "The process scraper" for the
+      # cardinality half of the argument.
+      processes:
+      filesystem:
+        # `squashfs` is the entry that matters: it is FS_REQUIRES_DEV, so the
+        # default `include_virtual_filesystems: false` does not filter it, and
+        # one mount per installed snap turns the series set over on every
+        # refresh. `overlay` is `nodev` and already filtered — kept only so the
+        # list stays right if virtual filesystems are ever included.
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - overlay
+            - squashfs
+
+  # Container statistics over a Docker API endpoint. A read-only proxy is the
+  # point of the variable: the raw socket is equivalent to host root, and which
+  # of the two a deployment offers is its decision, not this profile's.
+  docker_stats:
+    endpoint: ${env:OTELBOX_HOST_AGENT_DOCKER_ENDPOINT}
+    collection_interval: 30s
+    timeout: 10s
+
+  prometheus/host:
+    config:
+      scrape_configs:
+        # Neighbouring processes on this host that publish Prometheus metrics.
+        # Which ones those are is the deployment's to say; two entries are here
+        # to show that the list is configuration rather than a fixed set.
+        - job_name: host-neighbours
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - ${env:OTELBOX_HOST_AGENT_SCRAPE_TARGET_1}
+                - ${env:OTELBOX_HOST_AGENT_SCRAPE_TARGET_2}
+        # The same bind host as the endpoint it scrapes, set under
+        # service::telemetry below, so the target follows the listener.
+        - job_name: host-agent
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - ${env:OTELBOX_HOST_AGENT_BIND_HOST}:8890
+
+  # Selected units only, and the list being finite is the invariant: the whole
+  # journal would carry every authentication attempt and every kernel message
+  # off this host through a pipeline built for application telemetry. Which
+  # units matter is the deployment's; the agent's own unit must not be among
+  # them, or every send produces the log line that produces the next send.
+  #
+  # Linux-only, and it execs `journalctl` rather than reading the journal, so
+  # this receiver works in this role and in no other — see AGENTS.md.
+  journald:
+    units:
+      - ${env:OTELBOX_HOST_AGENT_JOURNAL_UNIT_1}
+      - ${env:OTELBOX_HOST_AGENT_JOURNAL_UNIT_2}
+    storage: file_storage/journald
+
+processors:
+  # Without this, host metrics arrive carrying no statement of which machine
+  # produced them: the host_metrics receiver sets no resource attributes of its
+  # own. Only the system detector runs, so nothing here reaches for a cloud
+  # metadata endpoint.
+  resource_detection/system:
+    detectors:
+      - system
+    system:
+      hostname_sources:
+        - os
+
+exporters:
+  otlp_grpc/gateway:
+    endpoint: ${env:OTELBOX_HOST_AGENT_GATEWAY_ENDPOINT}
+    auth:
+      authenticator: headers_setter/gateway
+    tls:
+      # Plaintext by default because this profile cannot know how far this leg
+      # travels; enabling transport security on it is the deploying
+      # repository's decision. The authenticator above is chosen so that
+      # decision stays open — see the extension's comment.
+      insecure: true
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      # In memory, and that is the decision rather than an omission.
+      #
+      # A persistent queue exists to survive the producer dying, and it would
+      # cost a bbolt file, an fsync per batch and a corruption mode. What it
+      # would actually protect against is the gateway being recreated, and the
+      # queue below plus the retry policy cover that window several times over.
+      # What it would not protect against is this agent restarting — and the
+      # host metrics it would then replay are already stale, because they
+      # describe a machine as it was minutes ago. Durability for telemetry that
+      # matters is the gateway's job, and the gateway holds a WAL per backend.
+      sizer: items
+      queue_size: 5000
+      # Drop rather than block. Blocking would stall the scrapers, which is how
+      # a stalled exporter turns into missing metrics for the period after it
+      # recovers as well as during the outage.
+      block_on_overflow: false
+      # Stated rather than defaulted: omit `batch:` entirely and there is no
+      # batcher at all, so the outgoing payload is unbounded in bytes and a
+      # large scrape can exceed the gateway's receive limit. A record above
+      # max_size is dropped here rather than split, so keep the invariant:
+      # max_size < the gateway's max_recv_msg_size_mib ≤ max_request_body_size.
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: 8388608
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      # Bounded, unlike the gateway's unbounded policy: the gateway retries
+      # forever because it has a disk to retry from, and this agent does not.
+      max_elapsed_time: 300s
+
+service:
+  extensions:
+    - healthcheckv2
+    - headers_setter/gateway
+    - file_storage/journald
+  telemetry:
+    metrics:
+      # readers is a list, so this replaces the shared base layer's entry
+      # outright rather than merging with it. 8890 because a host running both
+      # a gateway and this agent has already spent 8888 and 8889; the address
+      # beside it is the deployment's, as every other listener here is.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: ${env:OTELBOX_HOST_AGENT_BIND_HOST}
+                port: 8890
+  pipelines:
+    # redaction/secrets comes from base.yaml and runs here too. Host metric
+    # attributes are not obviously credential-shaped, but container labels and
+    # Prometheus target labels reach this pipeline from workloads this agent
+    # does not own, and the point of the shared layer is that no pipeline gets
+    # to decide it is the exception.
+    metrics/host:
+      receivers:
+        - host_metrics
+        - docker_stats
+        - prometheus/host
+      processors:
+        - memory_limiter
+        - resource_detection/system
+        - redaction/secrets
+        - batch
+      exporters:
+        - otlp_grpc/gateway
+    logs/journal:
+      receivers:
+        - journald
+      processors:
+        - memory_limiter
+        - resource_detection/system
+        - redaction/secrets
+        - batch
+      exporters:
+        - otlp_grpc/gateway

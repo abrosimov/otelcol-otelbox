@@ -2,22 +2,64 @@
 #
 #   otelcol-otelbox --config config/base.yaml --config config/examples/gateway.yaml
 #
-# The authoritative copy lives in `remote_server_setup`
-# (`roles/otel_gateway/files/config.yaml`); this one exists so CI can prove the
-# base layer still composes into a runnable role, which is worth something only
-# while it stays a faithful mirror. Secrets arrive as environment variables or
-# mounted files from Ansible Vault: OTELBOX_GATEWAY_TOKEN_FILE,
-# OTELBOX_GATEWAY_STORAGE, CLICKSTACK_INGESTION_API_KEY.
+# It demonstrates what the gateway role can do and how it is configured; it is
+# not a copy of any deployment, so anything naming a neighbour, a socket or a
+# credential is an ${env:...} reference the deploying repository fills in. The
+# shape is the part worth preserving: authenticated ingest, redaction from the
+# shared base layer, and one on-disk WAL and one queue per backend.
+#
+# Environment: OTELBOX_GATEWAY_BIND_HOST, OTELBOX_GATEWAY_TOKEN_FILE,
+# OTELBOX_GATEWAY_STORAGE, OTELBOX_GATEWAY_DOCKER_ENDPOINT,
+# OTELBOX_GATEWAY_HEALTH_ENDPOINT, OTELBOX_GATEWAY_BACKEND_1_ENDPOINT,
+# OTELBOX_GATEWAY_BACKEND_2_ENDPOINT, OTELBOX_GATEWAY_BACKEND_2_TOKEN.
 
 extensions:
+  # The same health check the other two roles wire, on the same keys. Its
+  # `development` stability was accepted knowingly; see config/examples/edge.yaml
+  # for the reasoning behind each setting here.
+  healthcheckv2:
+    # Required. Without it the extension serves the v1 responder instead, which
+    # answers 200 on `/` and on every path beneath it, and ignores the keys below.
+    use_v2: true
+    http:
+      # Deployment data, and more so here than on the edge: a probe reaching a
+      # container has to come from outside it, since `FROM scratch` leaves
+      # nothing inside to run one.
+      endpoint: ${env:OTELBOX_GATEWAY_HEALTH_ENDPOINT}
+      status:
+        enabled: true
+        path: /status
+      # Serves the merged configuration with every ${env:...} expanded — the
+      # ingest allowlist path and the second backend's token among them. This
+      # listener carries no authentication, so the answer must stay no.
+      config:
+        enabled: false
+    # NO `grpc:` KEY, and the omission is the setting: there is no
+    # `enabled: false` for that responder, and writing the key even bare opens
+    # one on 127.0.0.1:13132.
+    component_health:
+      # Buys 500 while a component sits in a permanent error, which upstream
+      # reports only for a failed start or shutdown. It says nothing about either
+      # backend: a rejected or blocked export sets no component status, so a
+      # gateway with both queues filling answers 200 throughout.
+      include_permanent_errors: true
+      # Off. A gateway riding out a backend outage is doing its job, and this is
+      # the setting that would call that unhealthy once `recovery_duration`
+      # elapsed.
+      include_recoverable_errors: false
+
+  # One allowlist for every client — remote edges and the co-located host agent
+  # alike — with one token per source, so one can be revoked without disturbing
+  # the rest. A receiver carries exactly one authenticator, so two independent
+  # credential sets would mean two receivers; see AGENTS.md.
   bearertokenauth/ingest:
     filename: ${env:OTELBOX_GATEWAY_TOKEN_FILE}
 
-  # One WAL per backend: SigNoz being down must not eat the disk budget
-  # ClickStack's backlog relies on, and a corrupted bbolt file must cost one
-  # backend rather than both.
-  file_storage/signoz:
-    directory: ${env:OTELBOX_GATEWAY_STORAGE}/signoz
+  # One WAL per backend: one backend being down must not eat the disk budget
+  # the other's backlog relies on, and a corrupted bbolt file must cost one
+  # backend rather than both. Two is the smallest N that shows the shape.
+  file_storage/backend_1:
+    directory: ${env:OTELBOX_GATEWAY_STORAGE}/backend_1
     create_directory: true
     fsync: true
     # Caps the single bbolt file, not the directory, and compaction writes a
@@ -26,51 +68,50 @@ extensions:
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/signoz
+      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/backend_1
 
-  file_storage/clickstack:
-    directory: ${env:OTELBOX_GATEWAY_STORAGE}/clickstack
+  file_storage/backend_2:
+    directory: ${env:OTELBOX_GATEWAY_STORAGE}/backend_2
     create_directory: true
     fsync: true
-    # See file_storage/signoz.
+    # See file_storage/backend_1.
     max_size: 10737418240
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/clickstack
+      directory: ${env:OTELBOX_GATEWAY_STORAGE}/compaction/backend_2
 
 receivers:
-  # Loopback even though this is the public ingress: the reverse proxy
-  # terminates TLS and forwards here. Authentication stays on regardless — the
-  # proxy is a network hop, not a trust boundary.
-  otlp/public:
+  # One receiver for every client, remote and host-local alike: every request
+  # authenticates, so the credential is the access control and the bind address
+  # is not.
+  otlp:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:14319
-        max_recv_msg_size_mib: 8
+        endpoint: ${env:OTELBOX_GATEWAY_BIND_HOST}:14319
+        # 32 MiB, and it binds the *uncompressed* message on both transports —
+        # `compression: gzip` buys no headroom. Keep it at or below the HTTP
+        # limit below and above every sender's `batch.max_size`.
+        max_recv_msg_size_mib: 32
         auth:
           authenticator: bearertokenauth/ingest
       http:
-        endpoint: 127.0.0.1:14320
+        endpoint: ${env:OTELBOX_GATEWAY_BIND_HOST}:14320
+        # The same 32 MiB in bytes. Stated rather than left to confighttp's
+        # 20 MiB default, which would silently make HTTP the tighter transport.
+        max_request_body_size: 33554432
         auth:
           authenticator: bearertokenauth/ingest
 
-  # Unauthenticated, for co-located workloads with no token to present;
-  # reachability is the access control.
-  otlp/local:
-    protocols:
-      grpc:
-        endpoint: 127.0.0.1:14321
-        max_recv_msg_size_mib: 8
-      http:
-        endpoint: 127.0.0.1:14322
-
+  # Container statistics over a Docker API endpoint. Whether that is a socket
+  # path, a read-only TCP proxy or nothing at all is the deployment's to say.
   docker_stats:
-    endpoint: unix:///var/run/docker.sock
+    endpoint: ${env:OTELBOX_GATEWAY_DOCKER_ENDPOINT}
     collection_interval: 30s
 
   # Scraped into the pipelines so the gateway's own metrics take the same
-  # durable, queued path as customer telemetry.
+  # durable, queued path as customer telemetry. The same bind host as the
+  # listener it scrapes, so the target follows wherever the deployment puts it.
   prometheus/self:
     config:
       scrape_configs:
@@ -78,12 +119,7 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets:
-                - 127.0.0.1:8889
-        - job_name: caddy
-          scrape_interval: 30s
-          static_configs:
-            - targets:
-                - 127.0.0.1:2019
+                - ${env:OTELBOX_GATEWAY_BIND_HOST}:8889
 
 processors:
   # Both blocks override the base layer's edge-sized values, which would throttle
@@ -101,18 +137,20 @@ processors:
     timeout: 5s
 
 exporters:
-  # `otlp_grpc`, not `otlp`: plain `otlp` is the deprecated alias in v0.156.0.
-  otlp_grpc/signoz:
-    endpoint: 127.0.0.1:14317
+  # `otlp_grpc`, not `otlp`: plain `otlp` is the deprecated exporter alias.
+  otlp_grpc/backend_1:
+    endpoint: ${env:OTELBOX_GATEWAY_BACKEND_1_ENDPOINT}
     tls:
-      # Loopback to a co-located container, so the traffic never leaves the
-      # kernel. No precedent for the edge→gateway leg, which must verify.
+      # Plaintext by default because this profile cannot know where the backend
+      # sits; enabling transport security on this leg is the deploying
+      # repository's decision. Not a milder `insecure_skip_verify`, which
+      # negotiates TLS and then verifies nothing — see AGENTS.md.
       insecure: true
     compression: gzip
     timeout: 10s
     sending_queue:
       enabled: true
-      storage: file_storage/signoz
+      storage: file_storage/backend_1
       # Byte-sized to match the storage cap it protects: an item count blocks
       # whatever the items weigh. 9 GiB sits under the 10 GiB file cap so the
       # exporter's overflow policy binds before a storage write fails.
@@ -123,7 +161,9 @@ exporters:
       # size the queues to make overflow an incident and alert before it.
       block_on_overflow: true
       # Byte-sized: this governs the payload handed to the backend, which is a
-      # property of the backend rather than of the disk budget.
+      # property of the backend rather than of the disk budget. A record above
+      # max_size is dropped here rather than split, so the ceiling is whatever
+      # the backend accepts — which this profile cannot know.
       batch:
         flush_timeout: 200ms
         sizer: bytes
@@ -136,19 +176,22 @@ exporters:
       # No deadline: the WAL exists so an outage is survived, not timed out.
       max_elapsed_time: 0s
 
-  otlp_grpc/clickstack:
-    endpoint: 127.0.0.1:24317
+  otlp_grpc/backend_2:
+    endpoint: ${env:OTELBOX_GATEWAY_BACKEND_2_ENDPOINT}
     headers:
-      authorization: ${env:CLICKSTACK_INGESTION_API_KEY}
+      # A backend may want its own credential, and its exact form belongs to
+      # the backend — some expect a bare key rather than `Bearer <key>` — so
+      # the value is passed through verbatim.
+      authorization: ${env:OTELBOX_GATEWAY_BACKEND_2_TOKEN}
     tls:
-      # Loopback to a co-located container; see otlp_grpc/signoz.
+      # See otlp_grpc/backend_1.
       insecure: true
     compression: gzip
     timeout: 10s
     sending_queue:
       enabled: true
-      storage: file_storage/clickstack
-      # See otlp_grpc/signoz for the sizing and the overflow policy.
+      storage: file_storage/backend_2
+      # See otlp_grpc/backend_1 for the sizing and the overflow policy.
       sizer: bytes
       queue_size: 9663676416
       block_on_overflow: true
@@ -165,41 +208,43 @@ exporters:
 
 service:
   extensions:
+    - healthcheckv2
     - bearertokenauth/ingest
-    - file_storage/signoz
-    - file_storage/clickstack
+    - file_storage/backend_1
+    - file_storage/backend_2
   telemetry:
     metrics:
       # `detailed` because the per-queue series are what overflow alerting is
       # built on, and this host carries the cardinality.
       level: detailed
-      # 8888 is taken on this host. A list, so this replaces the base entry
-      # rather than adding a second endpoint.
+      # A list, so this replaces the base entry rather than adding a second
+      # endpoint; 8888 is assumed taken wherever a gateway runs beside an edge.
       readers:
         - pull:
             exporter:
               prometheus:
-                host: 127.0.0.1
+                host: ${env:OTELBOX_GATEWAY_BIND_HOST}
                 port: 8889
   pipelines:
-    # Redaction runs here too, not only on the edges: otlp/local accepts
-    # telemetry that never passed through one, so this makes the guarantee a
-    # property of the gateway rather than of every producer behaving.
+    # Redaction runs here too, not only on the edges: the receiver accepts
+    # telemetry from host-local producers that never passed through an edge, so
+    # this makes the guarantee a property of the gateway rather than of every
+    # producer behaving.
     traces:
-      receivers: [otlp/public, otlp/local]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
-      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
     metrics:
-      receivers: [otlp/public, otlp/local]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
-      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
     logs:
-      receivers: [otlp/public, otlp/local]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
-      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
     # Same processors as everything else: scrape targets and container labels
     # are attributes too, and a credential in one would reach the backends.
     metrics/self:
       receivers: [prometheus/self, docker_stats]
       processors: [memory_limiter, redaction/secrets, batch]
-      exporters: [otlp_grpc/signoz, otlp_grpc/clickstack]
+      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]

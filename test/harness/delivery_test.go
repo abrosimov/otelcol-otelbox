@@ -20,18 +20,29 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 	redactionMarker := "otelbox-ci-redaction-" + randomHex(t, 8)
 	unauthorisedMarker := "otelbox-ci-unauthorised-" + randomHex(t, 8)
 
+	gatewayEndpoint := fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort)
+
 	writeTokenFile(t, tokenFile, validToken)
+
+	chain := mintGatewayChain(t, state)
 
 	gateway := startCollector(t, collectorSpec{
 		name:     "gateway",
 		stateDir: state,
 		env: map[string]string{
-			"OTELBOX_GATEWAY_TOKEN_FILE": tokenFile,
-			"OTELBOX_GATEWAY_STORAGE":    filepath.Join(state, "gateway-storage"),
-			"OTELBOX_CI_SINK":            sink,
-			// Nothing here dials ClickStack, but the role layer expands this at
-			// load time, so it must be set.
-			"CLICKSTACK_INGESTION_API_KEY": "unused-in-ci",
+			"OTELBOX_GATEWAY_TOKEN_FILE":   tokenFile,
+			"OTELBOX_GATEWAY_STORAGE":      filepath.Join(state, "gateway-storage"),
+			"OTELBOX_CI_SINK":              sink,
+			"OTELBOX_CI_GATEWAY_CERT_FILE": chain.certFile,
+			"OTELBOX_CI_GATEWAY_KEY_FILE":  chain.keyFile,
+			// The CI overlay drops all four from every pipeline, so none is
+			// reached — but expansion runs over the merged map, and an unset
+			// variable fails the load as a validation error naming the
+			// component rather than the variable.
+			"OTELBOX_GATEWAY_DOCKER_ENDPOINT":    "unix:///var/run/docker.sock",
+			"OTELBOX_GATEWAY_BACKEND_1_ENDPOINT": "127.0.0.1:34398",
+			"OTELBOX_GATEWAY_BACKEND_2_ENDPOINT": "127.0.0.1:34399",
+			"OTELBOX_GATEWAY_BACKEND_2_TOKEN":    "unused-in-ci",
 		},
 		configs: []string{
 			configPath("config", "base.yaml"),
@@ -51,8 +62,14 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 				// edge's credential, and assertion 3 would report on the wrong
 				// record.
 				"OTELBOX_EDGE_STORAGE":  filepath.Join(state, name+"-storage"),
-				"OTELBOX_EDGE_ENDPOINT": fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort),
+				"OTELBOX_EDGE_ENDPOINT": gatewayEndpoint,
 				"OTELBOX_EDGE_TOKEN":    token,
+				// The trust anchor for the leg the role layer keeps at
+				// `insecure: false`.
+				"OTELBOX_CI_EDGE_CA_FILE": chain.caFile,
+				// The ntp receiver survives the CI overlay in the config but
+				// not in any pipeline, so this is expanded and never dialled.
+				"OTELBOX_EDGE_NTP_ENDPOINT": "127.0.0.1:34123",
 			},
 			configs: []string{
 				configPath("config", "base.yaml"),
@@ -145,6 +162,16 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		// Health is green here and stays green for the rest of the run. That is
 		// the incident in one line: the endpoint launchd and every dashboard
 		// watched answered 200 the entire time telemetry was being dropped.
+
+		// This assertion's own precondition, inside rather than beside it: a
+		// sibling subtest could only make the run red, not stop this one
+		// reporting a certificate fault as a rejected token. A bad SAN, an
+		// expired leaf or a CA mismatch satisfies both halves below exactly as
+		// an unlisted token does, so the transport has to be known good — and
+		// known good here, at the moment the export is attempted.
+		if err := chain.verifyServed(gatewayEndpoint); err != nil {
+			t.Fatalf("the gateway's certificate does not verify against the CA the edge was handed, so a dropped record below would be a TLS fault and this assertion would say nothing about the allowlist: %v", err)
+		}
 
 		if !sendOrFail(t, "assertion 3", edgeHTTPPort,
 			logPayload(t, unauthorisedMarker, "otelbox integration test record")) {

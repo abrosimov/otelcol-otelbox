@@ -1,18 +1,29 @@
 # otelcol-otelbox
 
-OCB-built durable OpenTelemetry collector. One binary, two roles:
+OCB-built durable OpenTelemetry collector. One binary, three roles:
 
-- **edge** — runs on a workstation, accepts loopback OTLP from local
-  applications, redacts credentials, and forwards to a single remote gateway
-  over a `file_storage`-backed persistent WAL;
-- **gateway** — runs on the remote server, accepts authenticated OTLP from the
-  edges, and fans out to the telemetry backends with an independent persistent
-  WAL per backend.
+- **edge** — accepts unauthenticated OTLP from local applications, conventionally
+  on loopback, scrapes the host and its own metrics, redacts credentials, and
+  forwards to a single remote gateway over a `file_storage`-backed persistent
+  WAL;
+- **gateway** — accepts authenticated OTLP on a single receiver, from the edges
+  and from host-local producers alike, and fans out to N telemetry backends with
+  an independent persistent WAL and queue per backend;
+- **host-agent** — a plain host process beside a gateway, collecting the host's
+  metrics, container stats over a Docker API endpoint and journal logs from
+  selected units, and exporting to the gateway. It exists because a container
+  sees neither the host's `/proc` nor the journal nor a loopback-only admin
+  endpoint.
 
-The invariant both roles share: **every outbound leg has its own on-disk queue**,
-sized from above, with TLS verification left on and secrets injected only
-through the environment. What differs is the secret store and the supervisor,
-and both of those belong to the deployment, not to the collector.
+The roles are shapes, not machines. The invariants they share: **every leg that
+can lose data to a network has its own on-disk queue**, sized from above; every
+leg carries a credential of its own rather than relying on where its socket is
+reachable from; and secrets arrive only through the environment. Whether a given
+leg also carries transport security is the deployment's decision — the one
+exception is the edge→gateway leg, whose credential is a bare bearer token, so
+verification stays on there. The host agent is the one deliberate exception on
+durability: it keeps its queue in memory, because the gateway it feeds holds a
+WAL per backend.
 
 ## What lives here
 
@@ -22,9 +33,10 @@ not the deployment:
 | Path | Role |
 |------|------|
 | `builder.yaml` | OCB manifest. `dist.version` is this artefact's own semantic version and the single source of truth for a release; the upstream collector version lives in the `gomod` pins. |
-| `config/base.yaml` | Shared base configuration layer: the processors both roles run, plus the collector's own telemetry. Never a runnable configuration on its own. |
-| `config/examples/edge.yaml` | Reference edge profile. Validated by CI; the deployed copy lives in `devbox-setup`. |
-| `config/examples/gateway.yaml` | Reference gateway profile. Validated by CI; the deployed copy lives in `remote_server_setup` (`roles/otel_gateway/files/config.yaml`). |
+| `config/base.yaml` | Shared base configuration layer: the processors every role runs, plus the collector's own telemetry. Never a runnable configuration on its own. |
+| `config/examples/edge.yaml` | Reference edge profile — a demonstration of the role, validated by CI, not a copy of any deployment. |
+| `config/examples/gateway.yaml` | Reference gateway profile. Same status. |
+| `config/examples/host-agent.yaml` | Reference host-agent profile. Same status. |
 | `test/harness/` | Go test harness (stdlib-only, own module): end-to-end edge → authenticated gateway → sink delivery, plus a gateway backend-coupling scenario under queue pressure. |
 | `test/config/*-ci.yaml` | CI-only overlays for the harness: ports in the 34xxx block, a file sink in place of the real backends, and — for the coupling scenario — a stoppable backend double. |
 | `smoke-check.sh` | Post-build check: per-kind component counts vs the built binary. |
@@ -38,15 +50,24 @@ binary is produced by the OpenTelemetry Collector Builder. The one exception is
 `test/harness/`, a stdlib-only module that drives the built binary from the
 outside; it proves the artefact rather than being part of it.
 
-Deployment still lives in the consuming repositories: `devbox-setup` supervises
-the edge role through launchd, and `remote_server_setup` supervises the gateway
-role through Docker Compose. The service units, the secret stores and the
-machine-local setup scripts belong there, and so do the **authoritative** role
-configurations. What lives here under `config/examples/` are reference profiles:
-CI validates that the shared base layer still composes with each of them into a
-runnable configuration, which is only worth anything while they remain faithful
-mirrors of the deployed copies. Editing one of them changes nothing on any
-machine; a change made in a consuming repository belongs here too.
+Deployment lives in the consuming repositories: `devbox-setup` supervises the
+edge role, `remote_server_setup` the gateway and host-agent roles. The service
+units, the secret stores and the machine-local setup scripts belong there, and
+so do the configurations those repositories actually deploy.
+
+What lives here under `config/examples/` are **reference profiles, not
+mirrors.** They do two things: prove that the shared base layer still composes
+with each role into a runnable configuration, and demonstrate the capabilities
+and invariants a consuming repository is expected to preserve. They are not
+copies of anything, and a difference between a profile and a deployment is not
+automatically a defect in either — this repository publishes an artefact and a
+shared configuration layer, and cannot know what the estate around them looks
+like. Accordingly, **every value that names a neighbour, a socket path, a port
+belonging to another process or a product is an `${env:...}` reference**, and so
+is **every address a listener binds** — `${env:OTELBOX_<ROLE>_BIND_HOST}`, with
+the port written literally beside it, because a port is a convention this
+repository owns and documents while the choice between loopback and a wildcard
+depends on whether the role runs as a container, a pod or a host process.
 
 ## Configuration
 
@@ -69,32 +90,36 @@ redaction patterns cannot diverge** between the workstation and the server: held
 in two role repositories they would drift, and nothing would make that visible.
 Note that this is a convention rather than an enforced property — a role layer
 that redefined `redaction/secrets` would win outright. Add patterns to the base
-layer, for both roles, or not at all.
+layer, for every role, or not at all.
 
 Receivers, exporters, extensions, `service::pipelines` and `service::extensions`
 name a specific machine's endpoints, storage directories and credentials, so
 they belong to the role layer. Consequently neither layer alone is a runnable
 configuration.
 
-Two component types are spelled canonically and may look unfamiliar: the OTLP
-gRPC exporter is `otlp_grpc` (plain `otlp` is a deprecated alias in v0.156.0)
-and the resource detection processor is `resource_detection` (not
-`resourcedetection`). The deprecated names still load, so a deployed
-configuration using them keeps working — but the copy in `devbox-setup` uses
-both old names and should be renamed in lockstep when it adopts these profiles.
-The OTLP *receiver* is still `otlp`.
+Component types are spelled canonically and several may look unfamiliar.
+Upstream is renaming types to `snake_case` and keeping the old spelling as a
+deprecated alias, so 16 of the 46 components here have two names: the OTLP gRPC
+exporter is `otlp_grpc` (plain `otlp` is the alias, and the OTLP *receiver* is
+still `otlp`), the resource detection processor is `resource_detection`, the
+host metrics receiver is `host_metrics`, and so on. Do not guess — check
+`metadata.yaml`'s `type` and `deprecated_type` at the pinned version. The
+deprecated names still load, so a deployed configuration using them keeps
+working, but both consuming repositories carry one such rename to make.
 
 ## Components
 
 Two different sets, and the distinction matters:
 
 - **Linked** — everything in `builder.yaml`. Compiled into the binary, available
-  to any config, costs binary size only. Currently 42: 19 receivers, 8
-  processors, 3 exporters, 7 extensions, 5 connectors.
+  to any config, costs binary size only. Currently 46: 20 receivers, 10
+  processors, 3 exporters, 8 extensions, 5 connectors.
 - **Wired** — what a role configuration actually instantiates. The rest of the
   linked set is dormant until a pipeline references it, which needs no rebuild.
-  The linked set is therefore the union of what both roles may ever need, not
-  what either one runs.
+  The linked set is therefore the union of what any role may ever need, not
+  what any one of them runs. `journald` is Linux-only and wired by the host
+  agent alone; `oidc`, `oauth2client`, `groupbyattrs` and `cumulative_to_delta`
+  are wired by nothing at all, and deliberately so.
 
 CI enforces the linked set: `smoke-check.sh` compares per-kind counts from
 `builder.yaml` against the built binary's own `components` output, so a dropped
@@ -112,7 +137,7 @@ stripping.
 Native darwin/arm64, mirroring the CI steps:
 
 ```bash
-go install go.opentelemetry.io/collector/cmd/builder@v0.156.0   # the version the gomod pins carry
+go install go.opentelemetry.io/collector/cmd/builder@v0.157.0   # the version the gomod pins carry
 "$(go env GOPATH)/bin/builder" --config builder.yaml
 ./smoke-check.sh ./_build/otelcol-otelbox builder.yaml
 ```
@@ -122,17 +147,31 @@ does — every `${env:...}` reference is expanded at load time, so validation
 needs a value for each one:
 
 ```bash
+OTELBOX_EDGE_BIND_HOST=127.0.0.1 \
 OTELBOX_EDGE_STORAGE=/tmp/otelbox-edge \
 OTELBOX_EDGE_ENDPOINT=127.0.0.1:4317 \
 OTELBOX_EDGE_TOKEN=placeholder \
+OTELBOX_EDGE_PROBE_URL=http://127.0.0.1:4318/v1/logs \
+OTELBOX_EDGE_NTP_ENDPOINT=pool.ntp.org:123 \
+OTELBOX_EDGE_HEALTH_ENDPOINT=127.0.0.1:13133 \
   ./_build/otelcol-otelbox validate \
     --config config/base.yaml --config config/examples/edge.yaml
 ```
 
+The gateway and host-agent profiles need their own variables; the
+`validate-config` job in `.github/workflows/otelcol-otelbox.yml` carries a
+working dummy for every one of them and is the list to copy from.
+
+`validate` parses without starting anything, which matters on the edge and
+host-agent profiles: `host_metrics` and `resource_detection` both read the
+boot time at start-up, and a restricted command sandbox denies that `sysctl`.
+The failure reads like a configuration fault and is not one — see the harness
+section below.
+
 ## The test harness
 
 `test/harness` stands up processes of the binary under test, wired to each
-other over loopback with the same authenticated hop the deployment uses, and
+other over loopback across the same authenticated hop the roles define, and
 asserts on what came out of the far end. Two tests:
 
 `TestEdgeToGatewayDelivery`, the edge → gateway pipeline:
@@ -151,14 +190,23 @@ for days while every local signal stayed green — the process ran, the supervis
 reported it alive, the health endpoint answered 200, the OTLP receiver accepted
 everything sent to it. Those prove the local half of the pipeline and none of
 them prove delivery, so a wrong ingestion token looked exactly like a healthy
-collector and the telemetry was simply gone. If you are changing anything on the
-authentication path, this test is what stands between you and a repeat.
+collector and the telemetry was simply gone. **Moving every role to
+`healthcheckv2` did not close this**, and no setting on it would: the health
+extension aggregates component lifecycle events, and a rejected export emits
+none — see AGENTS.md "Component facts". The test polls the edge healthy *after*
+handing it a token the gateway refuses, which is that fact written down as an
+assertion. If you are changing anything on the authentication path, this test is
+what stands between you and a repeat.
 
 `TestBackendCouplingUnderQueuePressure`, a gateway with two backends: a stopped
 backend with queue headroom leaves the healthy one untouched, but once its queue
 fills, `block_on_overflow: true` plus synchronous fan-out
 (`internal/fanoutconsumer`) stalls the healthy backend too — and clears again
 once the stopped backend returns.
+
+Both tests wire the profiles through CI-only overlays under `test/config/`, so
+the harness needs the same environment the profiles do plus its own
+`OTELBOX_CI_*` values; `test/harness` sets them.
 
 It needs only Go, a repository checkout (it resolves `config/base.yaml` and the
 role profiles relative to its own package directory), and the ports in the
@@ -173,9 +221,11 @@ If `TestEdgeToGatewayDelivery` dies within seconds with `failed getting OS
 version: OSVersion failed to get os version: getting boot time: operation not
 permitted`, it is being run under a restricted command sandbox. That reads like
 a configuration fault and is not one: the `resource_detection` processor's
-`system` detector is being denied the boot-time `sysctl`. Run it outside the
-sandbox — CI runners are unaffected, and `TestBackendCouplingUnderQueuePressure`
-uses no `resource_detection` and is unaffected too.
+`system` detector is being denied the boot-time `sysctl`, and every
+`host_metrics` scraper reads the same value in `start()`, so a profile carrying
+either will not start there. Run it outside the sandbox — CI runners are
+unaffected, and `TestBackendCouplingUnderQueuePressure` uses neither and is
+unaffected too.
 
 ## Release flow
 
@@ -218,7 +268,7 @@ uses no `resource_detection` and is unaffected too.
    | Asset | What it is |
    |-------|------------|
    | `otelcol-otelbox_darwin_arm64` + `.sha256` | The edge binary. The checksum file holds bare hex, no filename column. |
-   | `otelcol-otelbox_linux_amd64` + `.sha256` | The gateway binary, and the exact bytes the container image ships. |
+   | `otelcol-otelbox_linux_amd64` + `.sha256` | The gateway and host-agent binary, and the exact bytes the container image ships. |
    | `otelcol-otelbox_config.tar.gz` | `config/base.yaml` and the reference profiles as validated for this version. |
    | `image-digest.txt` | One pinnable `ghcr.io/<owner>/otelcol-otelbox@sha256:...` reference on a single line. |
 
@@ -316,10 +366,32 @@ deployment's to choose; `remote_server_setup` owns the ones the server uses.
 
 ## Current state
 
-- `builder.yaml` declares `1.0.0`, built on upstream `v0.156.0`.
-- **`v1.0.0` is published**, and the formula carries the checksums the
-  publishing run wrote for it, so it installs. The version line and both digests
-  belong to CI.
+- `builder.yaml` declares `2.0.0`, built on upstream `v0.157.0`. **Not released
+  yet** — the published version is `v1.0.0` on upstream `v0.156.0`, and the
+  formula carries the checksums that run wrote, so it installs. The version line
+  and both digests belong to CI, and stay at 1.0.0 until 2.0.0 publishes.
+- 2.0.0 links five more components (`journald`, `oidc`, `oauth2client`,
+  `groupbyattrs`, `cumulative_to_delta`), unlinks `health_check` in favour of
+  `healthcheckv2`, adds the host-agent reference profile, and grows the edge
+  profile by `host_metrics`, `prometheus/self`, `ntp` and `http_check`.
+- **The reference profiles stopped being mirrors of the deployed copies**, and
+  everything naming a neighbour, a socket or a product became an `${env:...}`
+  reference. The gateway's two backend exporters and their WALs are now
+  `backend_1` and `backend_2`; the host agent authenticates with
+  `headers_setter` instead of `bearertokenauth`, which is what makes its
+  exporter start at all over a plaintext leg.
+- **The gateway now has one OTLP receiver and one allowlist**, not two of each:
+  14321/14322 are free, `OTELBOX_GATEWAY_LOCAL_TOKEN_FILE` is gone, and the host
+  agent's token is a line in the same file every edge's is.
+- **Every listener binds `${env:OTELBOX_<ROLE>_BIND_HOST}`** with a literal port,
+  and the OTLP receivers accept 32 MiB on both transports — stated on HTTP too,
+  where `confighttp` would otherwise default to 20 MiB and quietly be the
+  tighter of the two.
+- **The number is a major, and settled.** A consuming repository has to rewrite
+  its role configuration to take this release: the gateway's two receivers
+  collapse into one, `health_check` no longer exists to name, and three new
+  variables have to be rendered. That is the major criterion as the table below
+  states it.
 - The server runs the artefact (`remote_server_setup`, changes uncommitted
-  there); the workstation does not — `devbox-setup` still builds an edge
-  collector of its own.
+  there); the workstation's adoption is staged in `devbox-setup` and not
+  committed either. Neither has taken 2.0.0.

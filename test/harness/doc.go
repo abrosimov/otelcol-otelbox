@@ -19,9 +19,9 @@
 //
 // This harness closes that gap by standing up the real thing: processes of the
 // binary under test, in the roles it actually serves, wired to each other over
-// loopback with the same authenticated hop the deployment uses. It asserts on
-// what came out of the far end, which is the only signal the incident would
-// have moved.
+// loopback across the same authenticated, TLS-verified hop the roles define. It
+// asserts on what came out of the far end, which is the only signal the
+// incident would have moved.
 //
 // # What it proves
 //
@@ -44,7 +44,12 @@
 //     what the incident lacked. It is sound because the gateway classifies an
 //     authentication failure as permanent while the edge exporter runs
 //     retry_on_failure.max_elapsed_time: 0s (retry forever on transient errors)
-//     — so a non-zero send_failed means dropped, never merely delayed.
+//     — so a non-zero send_failed means dropped, never merely delayed. It
+//     carries a second precondition of its own, inside the subtest rather than
+//     beside it: a certificate fault satisfies both halves exactly as a
+//     rejected token does, so the assertion first handshakes with the gateway
+//     against the CA the edge was handed and refuses to conclude anything if
+//     the transport is at fault.
 //
 // TestBackendCouplingUnderQueuePressure: that two gateway backends are not
 // independent under `block_on_overflow: true`. A stopped backend with queue

@@ -46,11 +46,12 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 	healthySink := filepath.Join(state, "healthy-sink.json")
 	stalledSink := filepath.Join(state, "stalled-sink.json")
 	tokenFile := filepath.Join(state, "ingest-tokens")
+	ingestToken := "otelbox-ci-ingest-" + randomHex(t, 16)
 
-	// The scenario posts to the unauthenticated otlp/local receiver, but
-	// bearertokenauth/ingest is in service::extensions and reads its allowlist
-	// at startup, so the file has to exist.
-	writeTokenFile(t, tokenFile, "otelbox-ci-unused-"+randomHex(t, 16))
+	// One allowlist for every client, so the token posted below is the one the
+	// gateway loads — and a wrong one surfaces as the receiver's own 401 on the
+	// first subtest's post rather than as a healthy backend receiving nothing.
+	writeTokenFile(t, tokenFile, ingestToken)
 
 	healthyBackend := startBackend(t, state, "backend-healthy",
 		healthyBackendEndpoint, healthySink, healthyBackendMetricsPort)
@@ -67,11 +68,14 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 		name:     "coupling-gateway",
 		stateDir: state,
 		env: map[string]string{
-			"OTELBOX_GATEWAY_TOKEN_FILE":   tokenFile,
-			"OTELBOX_GATEWAY_STORAGE":      filepath.Join(state, "gateway-storage"),
-			"CLICKSTACK_INGESTION_API_KEY": "unused-in-ci",
-			"OTELBOX_CI_HEALTHY_ENDPOINT":  healthyBackendEndpoint,
-			"OTELBOX_CI_STALLED_ENDPOINT":  stalledBackendEndpoint,
+			"OTELBOX_GATEWAY_TOKEN_FILE":  tokenFile,
+			"OTELBOX_GATEWAY_STORAGE":     filepath.Join(state, "gateway-storage"),
+			"OTELBOX_CI_HEALTHY_ENDPOINT": healthyBackendEndpoint,
+			"OTELBOX_CI_STALLED_ENDPOINT": stalledBackendEndpoint,
+			// docker_stats is out of every pipeline here and the backend double
+			// checks no credential, but both are expanded at load time.
+			"OTELBOX_GATEWAY_DOCKER_ENDPOINT": "unix:///var/run/docker.sock",
+			"OTELBOX_GATEWAY_BACKEND_2_TOKEN": "unused-in-ci",
 		},
 		configs: []string{
 			configPath("config", "base.yaml"),
@@ -100,7 +104,9 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 			collectors...)
 	}()
 
-	if err := poll(readyTimeout, gateway, "the gateway's unauthenticated OTLP/HTTP listener", func() bool {
+	// An unauthenticated probe answering 401 is still an answer, and that is all
+	// readiness needs: the listener is up.
+	if err := poll(readyTimeout, gateway, "the gateway's OTLP/HTTP listener", func() bool {
 		return gatewayResponds(couplingGatewayHTTPPort)
 	}); err != nil {
 		t.Fatalf("the gateway never accepted a connection: %v", err)
@@ -110,7 +116,7 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 		t.Helper()
 
 		payload := logPayload(t, marker, strings.Repeat("x", couplingPadding))
-		status, body, err := postLogs(sendClient, couplingGatewayHTTPPort, payload)
+		status, body, err := postLogs(sendClient, couplingGatewayHTTPPort, ingestToken, payload)
 		switch {
 		case err != nil:
 			return fmt.Errorf("the receiver did not answer: %w", err)

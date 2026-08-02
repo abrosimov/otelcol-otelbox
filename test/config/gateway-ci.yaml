@@ -6,15 +6,28 @@
 #                   --config test/config/gateway-ci.yaml
 #
 # CI ONLY, never copied into a deployment. It moves the listeners into the 34xxx
-# block and swaps the backends for a sink the test can read — SigNoz and
-# ClickStack do not exist in CI, and standing them up would test them rather
+# block and swaps the backends for a sink the test can read — the real
+# backends do not exist in CI, and standing them up would test them rather
 # than the collector. Auth, redaction, limits and processor order are left
 # alone: they are what the assertions are about. A `file` sink cannot be
 # stopped, hence the separate gateway-coupling-ci.yaml.
 #
-# Environment: OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
-# CLICKSTACK_INGESTION_API_KEY (unused, but expanded at load time) and
-# OTELBOX_CI_SINK.
+# Environment, minus OTELBOX_GATEWAY_BIND_HOST and
+# OTELBOX_GATEWAY_HEALTH_ENDPOINT, which this layer replaces every reference to:
+# OTELBOX_GATEWAY_TOKEN_FILE, OTELBOX_GATEWAY_STORAGE,
+# OTELBOX_GATEWAY_DOCKER_ENDPOINT, OTELBOX_GATEWAY_BACKEND_1_ENDPOINT,
+# OTELBOX_GATEWAY_BACKEND_2_ENDPOINT and OTELBOX_GATEWAY_BACKEND_2_TOKEN (the
+# last four unused here, but expanded at load time), plus OTELBOX_CI_SINK,
+# OTELBOX_CI_GATEWAY_CERT_FILE and OTELBOX_CI_GATEWAY_KEY_FILE.
+
+extensions:
+  healthcheckv2:
+    http:
+      # Into the 34xxx block, a literal so the harness supplies no variable for
+      # it. Nothing polls this one — the gateway's readiness is established by
+      # the 401 precondition — but the extension is inherited and must bind
+      # somewhere that is not a running deployment.
+      endpoint: 127.0.0.1:34134
 
 exporters:
   # `append: false` (the default) truncates on start, so a rerun cannot pass on
@@ -27,18 +40,34 @@ exporters:
     flush_interval: 200ms
 
 receivers:
-  otlp/public:
+  otlp:
     protocols:
       grpc:
         endpoint: 127.0.0.1:34327
+        # The far end of the one leg this repository fixes at
+        # `insecure: false`, so CI serves a real certificate rather than
+        # leaving the only production TLS setting on the main leg unexercised.
+        # Minted per run by the harness, with 127.0.0.1 as an IP SAN.
+        tls:
+          cert_file: ${env:OTELBOX_CI_GATEWAY_CERT_FILE}
+          key_file: ${env:OTELBOX_CI_GATEWAY_KEY_FILE}
+      # Plaintext, and deliberately: the harness probes this endpoint to
+      # establish that unauthenticated ingest is refused, which is a question
+      # about the authenticator rather than the transport.
       http:
         endpoint: 127.0.0.1:34328
-  otlp/local:
-    protocols:
-      grpc:
-        endpoint: 127.0.0.1:34331
-      http:
-        endpoint: 127.0.0.1:34332
+
+  # A literal target, because the harness supplies no OTELBOX_GATEWAY_BIND_HOST
+  # and expansion runs over the merged map. Nothing scrapes it: the pipeline
+  # below drops this receiver, so it is configured and never built.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otel-gateway
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 127.0.0.1:34889
 
 service:
   telemetry:
@@ -55,21 +84,23 @@ service:
     # restated identically on purpose: it is the line a reviewer checks when
     # asking whether the test still runs redaction.
     traces:
-      receivers: [otlp/public]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
       exporters: [file/sink]
     metrics:
-      receivers: [otlp/public]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
       exporters: [file/sink]
     logs:
-      receivers: [otlp/public]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
       exporters: [file/sink]
     # Repointed rather than deleted, because confmap cannot remove a key. Left
     # alone, `docker_stats` would open a Docker socket the runner does not have
-    # and kill startup.
+    # and kill startup. With the two receivers collapsed into one, the only
+    # replacement that opens nothing new is that receiver itself — harmless
+    # because the assertions post logs, which never reach a metrics pipeline.
     metrics/self:
-      receivers: [otlp/local]
+      receivers: [otlp]
       processors: [memory_limiter, redaction/secrets, batch]
       exporters: [file/sink]

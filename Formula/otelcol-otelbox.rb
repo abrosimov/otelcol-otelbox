@@ -80,9 +80,9 @@ class OtelcolOtelbox < Formula
           --config #{opt_pkgshare}/config/base.yaml \\
           --config <your-role-layer>.yaml
 
-      `config/examples` holds the edge and gateway profiles CI validated for this
-      version, so a deployed configuration can be diffed against the profile that
-      was actually proven:
+      `config/examples` holds the edge, gateway and host-agent profiles CI
+      validated for this version, so a deployed configuration can be diffed
+      against the profile that was actually proven:
 
         diff <your-role-layer>.yaml #{opt_pkgshare}/config/examples/edge.yaml
     EOS

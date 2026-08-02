@@ -3,7 +3,7 @@
 #   otelcol-otelbox --config config/base.yaml --config <exactly-one-role>.yaml
 #
 # It exists so the redaction patterns cannot diverge between the workstation and
-# the server; held in two role repositories they would drift unnoticed. Later
+# the server; held in each role's own configuration they would drift unnoticed. Later
 # `--config` arguments win, maps merge key by key, and a list replaces the
 # earlier list wholesale. Declares no pipeline, so it is not runnable alone.
 
@@ -16,7 +16,7 @@ processors:
     spike_limit_mib: 64
 
   # A role layer can replace these lists, but doing so defeats the reason this
-  # file exists — add patterns here, for both roles, or not at all.
+  # file exists — add patterns here, for every role, or not at all.
   # allow_all_keys keeps this a deny-list; an allow-list would silently drop
   # every attribute nobody enumerated, leaving healthy-looking empty telemetry.
   redaction/secrets:
@@ -46,9 +46,13 @@ service:
       level: info
       encoding: json
     metrics:
+      # The conservative floor. A role that needs `error_type` and
+      # `error_permanent` on otelcol_exporter_send_failed_* overrides this to
+      # `detailed`, which is a map key and merges.
       level: normal
-      # A list, so a role layer needing another port replaces it outright —
-      # which is how the gateway gets 8889 instead of a second endpoint.
+      # A list, so a role layer replaces it outright rather than adding a second
+      # endpoint — which every role does, to take its own port and to put the
+      # bind address in the environment where the rest of them live.
       readers:
         - pull:
             exporter:
