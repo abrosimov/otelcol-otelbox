@@ -36,7 +36,7 @@ stdlib-only Go module that drives the built binary from outside.
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `shared-config-check.sh` | Byte-compares every marked shared region. |
 | `smoke-check.sh` | Checks component counts and the named storage/redaction invariants against a built binary. |
-| `test/harness/` | Delivery, redaction, authentication, crash durability and backend-coupling tests. |
+| `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
 | `Formula/otelcol-otelbox.rb` | Homebrew installation channel; release literals are CI-owned. |
@@ -46,8 +46,8 @@ stdlib-only Go module that drives the built binary from outside.
 
 ```text
 edge        loopback OTLP -> origin -> redaction -> WAL -> one gateway
-gateway     authenticated OTLP -> redaction -> WAL per backend -> N backends
-host-agent  host/Docker/journal/self telemetry -> redaction -> WAL -> gateway
+gateway     authenticated OTLP -> redaction -> eligibility -> WAL per recipient -> N recipients
+host-agent  host/journal/self telemetry -> redaction -> WAL -> gateway
 ```
 
 A consumer loads exactly one profile:
@@ -65,6 +65,8 @@ Profiles demonstrate a contract; they are not mirrors of a current deployment.
 Values naming a bind address, neighbour, credential file, storage root or disk
 budget are deployment data and use `${env:...}`. Literal component names,
 pipeline order and role-owned ports are repository conventions.
+Bind-address references carry loopback defaults. A deployment must opt into a
+wildcard or routable listener explicitly.
 
 ## Environment semantics
 
@@ -105,13 +107,24 @@ accepts a record with the gateway down, kills the edge with SIGKILL, reopens the
 same WAL and requires delivery after recovery. Do not weaken the kill into a
 graceful shutdown.
 
+`TestGatewayPersistsSelectedTraceBeforeAcknowledgement` applies the same
+boundary to the selected-traces HTTP recipient. Eligible records are required
+by the all-signal recipient set and that additional recipient.
+
 ## Authentication and transport
 
 The gateway authenticates every OTLP request through one
 `bearertokenauth/ingest` allowlist. It holds one bare token per line; text after
-the first whitespace is a comment. Edge and host agent use
+the first whitespace is ignored upstream, but the repository contract forbids
+whitespace and comments so audits cannot disagree with the runtime. An empty
+reload retains the previous tokens; revoke the last client by replacing it with
+a non-client token, never by truncating the file. Edge and host agent use
 `headers_setter/gateway`, whose file contains the complete `Bearer <token>`
 value and cannot carry a trailing comment.
+
+The selected-traces HTTP exporter uses another `headers_setter` instance. Its
+authorisation file and arbitrary protocol header are generic deployment inputs;
+concrete backend names, paths, credentials and versions do not belong here.
 
 Outbound OTLP exporters retain secure TLS defaults. A deployment whose
 neighbour deliberately speaks plaintext adds `tls.insecure: true` to its
@@ -129,32 +142,36 @@ while every export is rejected.
 ### Edge
 
 - OTLP listens on `${OTELBOX_BIND_HOST}:4317` and `:4318`; self metrics use
-  port 8888.
+  port 8888. Ingest is capped at 1 MiB and sender batches at 1.5 MiB.
 - One persistent gateway queue blocks on overflow and retries indefinitely.
 - `resource_detection` stamps the local origin before redaction.
 
 ### Gateway
 
 - One authenticated OTLP receiver listens on ports 14319 and 14320; self
-  metrics use 8889.
-- Each backend has separate storage and queue configuration. A storage
+  metrics use 8889. Ingest is capped at 2 MiB.
+- Each recipient has separate storage and queue configuration. A storage
   `max_size` applies per signal file, not per extension.
-- Fan-out is synchronous. A stopped backend is isolated while its queue has
+- The reference has one example all-signal gRPC recipient and one traces-only
+  HTTP recipient selected by `otelbox.telemetry.class=llm`. Deployments render
+  the required all-signal cardinality; the binary does not fix it.
+- Fan-out is synchronous. A stopped recipient is isolated while its queue has
   headroom; once that blocking queue fills, backpressure reaches ingest. The
   healthy exporter may already have accepted the current record before the
   request blocks, so do not assert on exporter ordering.
-  `TestBackendCouplingUnderQueuePressure` proves both states.
-- Backend authentication is absent from the reference topology. Add it in the
-  consuming deployment when required.
+  `TestRequiredRecipientCouplingUnderQueuePressure` proves both states.
+- Concrete recipient authentication and protocol values stay in the consuming
+  deployment.
 
 ### Host agent
 
-- `host_metrics`, `docker_stats`, `prometheus/host` and selected `journald`
-  units feed metrics/log pipelines; self metrics use port 8890.
+- `host_metrics`, `prometheus/host` and selected `journald` units feed
+  metrics/log pipelines; self metrics use port 8890.
 - The journald cursor and outbound queue use distinct storage extensions.
 - `journald` executes `journalctl`, so this role cannot run from the published
   `scratch` image.
-- The raw Docker socket is equivalent to host root; prefer a constrained proxy.
+- Container statistics are omitted until a constrained rootless Podman API or
+  a cgroup/systemd-unit alternative is designed and tested.
 - The `process` scraper is deliberately disabled. It combines privilege gaps,
   unbounded per-PID series and credential-bearing command lines. Do not enable
   it by merely deleting PID attributes: that creates a single-writer violation.
@@ -162,8 +179,8 @@ while every export is rejected.
 ## Component names
 
 Use canonical v0.157 component types. In current profiles these include
-`otlp_grpc` for the exporter, `resource_detection`, `host_metrics`,
-`docker_stats`, `file_storage`, `healthcheckv2`, `headers_setter`,
+`otlp_grpc` and `otlp_http` for exporters, `resource_detection`, `host_metrics`,
+`filter`, `file_storage`, `healthcheckv2`, `headers_setter`,
 `bearertokenauth`, `prometheus` and `journald`. The OTLP receiver remains
 `otlp`. `health_check` is a separate, unlinked component, not an alias.
 
@@ -215,8 +232,9 @@ go test -C test/harness . -count=1 -timeout 15m -v \
 
 Supply every required role environment value for `validate`. It decodes but
 does not start components. The full harness proves delivery, redaction,
-authentication failure visibility, persistence across SIGKILL and backend
-coupling under pressure.
+authentication failure visibility, selected-trace routing and headers,
+persistence across SIGKILL, token replacement and recipient coupling under
+pressure.
 
 `resource_detection`'s system detector and every `host_metrics` scraper read
 boot time during startup. A command sandbox may deny that read and report

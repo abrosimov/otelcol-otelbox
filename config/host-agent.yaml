@@ -11,11 +11,10 @@
 # than an application's. It may run on a workstation, on the machine that runs
 # the gateway, or anywhere else — nothing here depends on which.
 #
-# Environment: OTELBOX_BIND_HOST, OTELBOX_HEALTH_ENDPOINT, OTELBOX_STORAGE_DIR,
-# OTELBOX_STORAGE_MAX_SIZE_BYTES, OTELBOX_QUEUE_SIZE_BYTES,
-# OTELBOX_UPSTREAM_ENDPOINT, OTELBOX_UPSTREAM_AUTH_HEADER_FILE,
-# OTELBOX_DOCKER_ENDPOINT, OTELBOX_SCRAPE_TARGET_1, OTELBOX_SCRAPE_TARGET_2,
-# OTELBOX_JOURNAL_UNIT_1, OTELBOX_JOURNAL_UNIT_2.
+# Required environment: OTELBOX_STORAGE_DIR, OTELBOX_UPSTREAM_ENDPOINT,
+# OTELBOX_UPSTREAM_AUTH_HEADER_FILE, OTELBOX_SCRAPE_TARGET_1,
+# OTELBOX_SCRAPE_TARGET_2, OTELBOX_JOURNAL_UNIT_1 and OTELBOX_JOURNAL_UNIT_2.
+# Bind, health, memory and queue values have safe reference defaults.
 
 extensions:
   # The same health check the other two roles wire, on the same keys; see
@@ -23,7 +22,7 @@ extensions:
   healthcheckv2:
     use_v2: true
     http:
-      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT}
+      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT:-127.0.0.1:14324}
       status:
         enabled: true
         path: /status
@@ -69,7 +68,7 @@ extensions:
     directory: ${env:OTELBOX_STORAGE_DIR}/gateway
     create_directory: true
     fsync: true
-    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-5368709120}
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-6442450944}
     compaction:
       on_start: true
       on_rebound: true
@@ -115,14 +114,6 @@ receivers:
             - overlay
             - squashfs
 
-  # Container statistics over a Docker API endpoint. A read-only proxy is the
-  # point of the variable: the raw socket is equivalent to host root, and which
-  # of the two a deployment offers is its decision.
-  docker_stats:
-    endpoint: ${env:OTELBOX_DOCKER_ENDPOINT}
-    collection_interval: 30s
-    timeout: 10s
-
   prometheus/host:
     config:
       scrape_configs:
@@ -141,7 +132,7 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets:
-                - ${env:OTELBOX_BIND_HOST}:8890
+                - ${env:OTELBOX_BIND_HOST:-127.0.0.1}:8890
 
   # Selected units only, and the list being finite is the invariant: the whole
   # journal would carry every authentication attempt and every kernel message
@@ -169,21 +160,15 @@ processors:
       hostname_sources:
         - os
 
-  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
-  # Memory is expressed as a percentage rather than a fixed MiB figure because
-  # the same profile may run in a memory-limited container, as a bare host
-  # process or on a workstation, and the percentage resolves against the cgroup
-  # quota where there is one and against system memory where there is not.
-  #
-  # It gates on live Go heap, so it sees neither RSS nor the memory-mapped WAL
-  # above. Refusal is driven by the soft limit alone, which is
-  # (limit − spike); the spike figure is the most the heap may grow inside one
-  # check interval, and it is measurable rather than a rule of thumb.
+  # A fixed ceiling is meaningful for an unprivileged host process; a percentage
+  # of all server RAM is not. The limiter observes Go heap, not RSS or mapped WAL
+  # pages.
   memory_limiter:
     check_interval: 1s
-    limit_percentage: 50
-    spike_limit_percentage: 10
+    limit_mib: ${env:OTELBOX_MEMORY_LIMIT_MIB:-400}
+    spike_limit_mib: ${env:OTELBOX_MEMORY_SPIKE_LIMIT_MIB:-80}
 
+  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
   # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
   # drop every attribute nobody enumerated, leaving healthy-looking empty
   # telemetry. Add patterns in all three profiles or in none.
@@ -211,6 +196,7 @@ exporters:
     sending_queue:
       enabled: true
       storage: file_storage/gateway
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}
       # Scrapers cannot be back-pressured: blocking only trades a rejected item
@@ -223,8 +209,8 @@ exporters:
       batch:
         flush_timeout: 200ms
         sizer: bytes
-        min_size: 1048576
-        max_size: 8388608
+        min_size: 524288
+        max_size: 1572864
     retry_on_failure:
       enabled: true
       initial_interval: 5s
@@ -259,16 +245,14 @@ service:
         - pull:
             exporter:
               prometheus:
-                host: ${env:OTELBOX_BIND_HOST}
+                host: ${env:OTELBOX_BIND_HOST:-127.0.0.1}
                 port: 8890
   pipelines:
-    # redaction/secrets runs here too. Host metric attributes are not obviously
-    # credential-shaped, but container labels and Prometheus target labels reach
-    # this pipeline from workloads this collector does not own.
+    # Prometheus target labels reach this pipeline from workloads the collector
+    # does not own, so host telemetry retains the shared redaction boundary.
     metrics/host:
       receivers:
         - host_metrics
-        - docker_stats
         - prometheus/host
       processors:
         - memory_limiter

@@ -12,17 +12,20 @@ otelcol-otelbox --config config/edge.yaml
 
 | Variable | Meaning |
 | --- | --- |
-| `OTELBOX_BIND_HOST` | Address used by the OTLP listeners, self-metrics reader and self-scrape target. Conventionally `127.0.0.1` on a host process. |
-| `OTELBOX_HEALTH_ENDPOINT` | Complete `host:port` for `healthcheckv2`, conventionally `127.0.0.1:13133`. |
 | `OTELBOX_STORAGE_DIR` | Private writable root for the gateway WAL and its compaction files. |
 | `OTELBOX_UPSTREAM_ENDPOINT` | Gateway OTLP/gRPC `host:port`. |
 | `OTELBOX_UPSTREAM_AUTH_HEADER_FILE` | File containing the complete header value, literally `Bearer <token>`. |
 
-Optional capacity variables have safe absent-variable defaults:
+Reference variables have safe absent-variable defaults:
 
 | Variable | Default | Constraint |
 | --- | ---: | --- |
-| `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 5 GiB | Must be larger than the queue and leave filesystem headroom for compaction. |
+| `OTELBOX_BIND_HOST` | `127.0.0.1` | Fails closed on loopback when the deployment omits it. |
+| `OTELBOX_HEALTH_ENDPOINT` | `127.0.0.1:13133` | Complete health `host:port`. |
+| `OTELBOX_MEMORY_LIMIT_MIB` | 400 MiB | Fixed hard threshold for the workstation process. |
+| `OTELBOX_MEMORY_SPIKE_LIMIT_MIB` | 80 MiB | Spike allowance below the hard threshold. |
+| `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent outbound workers. |
+| `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 6 GiB | Per signal file; 1.5 times the queue capacity. |
 | `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Must fit within storage capacity. |
 
 An exported empty value does not select the default. Render explicit values in
@@ -32,8 +35,8 @@ production rather than relying on these reference sizes.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `${OTELBOX_BIND_HOST}:4317` | OTLP/gRPC ingest, up to 32 MiB per message. |
-| `${OTELBOX_BIND_HOST}:4318` | OTLP/HTTP ingest, up to 32 MiB per request. |
+| `${OTELBOX_BIND_HOST}:4317` | OTLP/gRPC ingest, up to 1 MiB per message. |
+| `${OTELBOX_BIND_HOST}:4318` | OTLP/HTTP ingest, up to 1 MiB per request. |
 | `${OTELBOX_BIND_HOST}:8888/metrics` | Detailed Collector metrics; also scraped back through the durable telemetry pipeline. |
 | `${OTELBOX_HEALTH_ENDPOINT}/status` | Component lifecycle health. It does not prove delivery. |
 
@@ -61,6 +64,11 @@ The exporter queue writes through `file_storage/gateway`, uses byte-based
 capacity and blocks on overflow. Retry has no elapsed-time limit. Sender
 batching happens inside that persistent queue; there is no pipeline `batch`
 processor that could return success while retaining the record only in memory.
+The sender splits batches at 1.5 MiB, below the gateway's 2 MiB receive limit.
+
+The 4 GiB queue is a reference outage budget. Production should render
+`peak encoded bytes/second * outage seconds * safety factor` and retain the
+1.5 storage-to-queue ratio rather than copying the default unmeasured.
 
 The harness forces this boundary: it posts a record while the gateway is down,
 requires HTTP 200, kills the edge with SIGKILL, reopens the same storage and

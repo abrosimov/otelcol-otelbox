@@ -22,6 +22,9 @@ secrets, services, storage paths and network topology.
 | `health_check` may still be configured. | Only `healthcheckv2` is linked and `/status` is the health path. |
 | Pipeline `batch` may precede the persistent exporter. | The processor is not linked; sender batching happens inside the exporter queue after durable enqueue. |
 | Host-agent export may be in memory and time-limited. | It has a persistent byte-sized queue and indefinite transient retry. |
+| Host-agent container statistics may use Docker or Podman sockets. | The reference first cut omits container statistics until a constrained rootless telemetry boundary is defined. |
+| Gateway fan-out may be described as two fixed backends. | Recipients are an explicitly rendered N-element set; each required recipient owns an exporter and WAL. |
+| Gateway recipients may all use OTLP/gRPC. | The reference also proves a selected-traces OTLP/HTTP recipient with arbitrary headers. |
 
 The old `config/base.yaml` and `config/examples/` files are deliberately absent
 from the release archive and Homebrew installation. Keeping local copies under
@@ -35,6 +38,7 @@ Use the v0.157 canonical spelling in rendered configuration:
 | Old spelling | 2.0 spelling |
 | --- | --- |
 | OTLP exporter `otlp/...` | `otlp_grpc/...` |
+| OTLP/HTTP exporter `otlphttp/...` | `otlp_http/...` |
 | `resourcedetection/...` | `resource_detection/...` |
 | `hostmetrics` | `host_metrics` |
 | `health_check` | `healthcheckv2` |
@@ -54,13 +58,22 @@ the previous role-prefixed names are:
 | `OTELBOX_EDGE_ENDPOINT`, `OTELBOX_HOST_AGENT_GATEWAY_ENDPOINT` | `OTELBOX_UPSTREAM_ENDPOINT` |
 | Edge token value, `OTELBOX_HOST_AGENT_AUTH_HEADER_FILE` | `OTELBOX_UPSTREAM_AUTH_HEADER_FILE` containing the full header value |
 | `OTELBOX_GATEWAY_TOKEN_FILE` | `OTELBOX_INGEST_TOKEN_FILE` |
-| `OTELBOX_GATEWAY_BACKEND_1_ENDPOINT`, `_2_ENDPOINT` | `OTELBOX_BACKEND_1_ENDPOINT`, `_2_ENDPOINT` |
-| `OTELBOX_HOST_AGENT_DOCKER_ENDPOINT` | `OTELBOX_DOCKER_ENDPOINT` |
 | `OTELBOX_HOST_AGENT_SCRAPE_TARGET_1`, `_2` | `OTELBOX_SCRAPE_TARGET_1`, `_2` |
 | `OTELBOX_HOST_AGENT_JOURNAL_UNIT_1`, `_2` | `OTELBOX_JOURNAL_UNIT_1`, `_2` |
 
+The old fixed backend endpoint inputs have no one-to-one replacement. The
+reference uses `OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT` for its single example;
+deployments render a named exporter and WAL for every actual recipient.
+
+The selected-traces recipient additionally requires
+`OTELBOX_SELECTED_TRACES_ENDPOINT`,
+`OTELBOX_SELECTED_TRACES_AUTH_HEADER_FILE`,
+`OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_NAME` and
+`OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE`. Concrete vendor paths,
+credentials and protocol versions belong to the consuming repository.
+
 Removed example-only inputs such as edge probe/NTP values, gateway Docker
-inputs, a second-backend token and the local gateway token file have no direct
+inputs, per-backend tokens and the local gateway token file have no direct
 replacement in the published profiles. If a deployment still needs one of
 those capabilities, add it deliberately to that repository's rendered
 configuration and its own validation rather than restoring the 1.x layer.
@@ -70,20 +83,28 @@ is absent. An exported empty value becomes a zero value and can mean unlimited,
 no splitting or invalid configuration depending on the component. Render
 explicit production budgets.
 
+Exporter IDs are part of persistent queue identity. Renaming `otlp/gateway` or
+an ordinal backend ID to a named `otlp_grpc/<recipient>` instance does not
+migrate an existing bbolt backlog. Drain and verify the old exporter queue
+before cutover, preserve the old WAL directory for rollback, and start the new
+ID with a new empty directory. Do not treat process health as proof that the old
+queue was replayed.
+
 ## Migration order
 
 1. Update the gateway rendering in `remote_server_setup` first. Collapse its
    ingest receivers, adopt the shared allowlist and canonical names, allocate
-   one WAL directory per backend and add the transport settings required by the
-   real ingress and backends.
+   one WAL directory per required recipient and add the transport, selected
+   routing and header settings required by the real recipients.
 2. Validate that rendered gateway configuration with the 2.0 binary before
    replacing the running service. Confirm unauthenticated ingest returns 401.
 3. Update the edge installation and launchd rendering in `devbox-setup`. Keep
    Homebrew out of managed workstations: the playbook-owned binary and launchd
    agent must refer to the same release asset.
 4. Update `remote_server_setup`'s host-agent rendering. Run it as a host process,
-   provide a constrained Docker endpoint where possible, allocate outbound WAL
-   capacity and preserve a separate journald cursor directory.
+   allocate outbound WAL capacity and preserve a separate journald cursor
+   directory. Keep container statistics out until the rootless boundary is
+   designed and tested.
 5. Remove legacy base/example files and old environment entries from managed
    destinations only after the new service command points at one role file.
 
@@ -104,12 +125,12 @@ For each consuming repository:
 - verify TLS from the client's network namespace to the endpoint it actually
   dials;
 - require unauthenticated gateway ingest to return 401;
-- send a unique marker through the complete path and observe it at the final
-  backend;
+- send a unique marker through the complete path and observe it at every
+  eligible required recipient;
 - alert on exporter send/enqueue failures and queue utilisation; do not use
   `/status` as a delivery assertion;
 - on the host agent, run a real startup smoke test as the service account so
-  Docker, `/proc`, boot-time detection and `journalctl` permissions are covered.
+  `/proc`, boot-time detection and `journalctl` permissions are covered.
 
 Before publishing or deploying, run this repository's smoke check, shared-block
 check and full harness against the exact binary to be distributed. The harness

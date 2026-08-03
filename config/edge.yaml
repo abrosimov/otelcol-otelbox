@@ -12,9 +12,9 @@
 # one gateway. Its one additional duty is not losing that data while the gateway
 # is unreachable, which is what the on-disk queue below is for.
 #
-# Environment: OTELBOX_BIND_HOST, OTELBOX_HEALTH_ENDPOINT, OTELBOX_STORAGE_DIR,
-# OTELBOX_STORAGE_MAX_SIZE_BYTES, OTELBOX_QUEUE_SIZE_BYTES,
-# OTELBOX_UPSTREAM_ENDPOINT, OTELBOX_UPSTREAM_AUTH_HEADER_FILE.
+# Required environment: OTELBOX_STORAGE_DIR, OTELBOX_UPSTREAM_ENDPOINT,
+# OTELBOX_UPSTREAM_AUTH_HEADER_FILE. Bind, health, memory and queue values have
+# safe reference defaults and should still be rendered explicitly in production.
 
 extensions:
   # `healthcheckv2`, not the alpha `health_check`, which is no longer linked. It
@@ -25,7 +25,7 @@ extensions:
     # 200 on `/` and every path beneath it and ignores the keys below.
     use_v2: true
     http:
-      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT}
+      endpoint: ${env:OTELBOX_HEALTH_ENDPOINT:-127.0.0.1:13133}
       status:
         enabled: true
         # v2's default. v1's `/` is not served under it, so a probe has to move
@@ -88,7 +88,7 @@ extensions:
     # back on zero with only an Info line. And supplying a default silences the
     # "references unset environment variable" warning entirely, so a forgotten
     # variable now looks like a deliberate one.
-    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-5368709120}
+    max_size: ${env:OTELBOX_STORAGE_MAX_SIZE_BYTES:-6442450944}
     # bbolt never returns freed pages, so without compaction one spike keeps the
     # disk for good.
     compaction:
@@ -100,22 +100,19 @@ extensions:
       cleanup_on_start: true
 
 receivers:
-  # These listeners have no authentication, so whoever can reach them can write.
-  # Which address that is belongs to the deployment.
+  # These listeners have no authentication. The absent-variable default is
+  # loopback so a missed deployment value fails closed rather than exposing
+  # local ingest on every interface.
   otlp:
     protocols:
       grpc:
-        endpoint: ${env:OTELBOX_BIND_HOST}:4317
-        # 32 MiB, and it binds the compressed length and the decompressed one
-        # alike, so `compression: gzip` buys no headroom. Matched to the
-        # gateway's own limit so a record this edge accepts is one the gateway
-        # will too.
-        max_recv_msg_size_mib: 32
+        endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:4317
+        # Local producers get 1 MiB. The exporter may coalesce records up to
+        # 1.5 MiB, leaving framing headroom under the gateway's 2 MiB limit.
+        max_recv_msg_size_mib: 1
       http:
-        endpoint: ${env:OTELBOX_BIND_HOST}:4318
-        # The same 32 MiB in bytes. Stated rather than left to confighttp's
-        # 20 MiB default, which would silently make HTTP the tighter transport.
-        max_request_body_size: 33554432
+        endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:4318
+        max_request_body_size: 1048576
 
   # This collector's own metrics, scraped rather than pushed out of
   # `service::telemetry`: that export path is a separate SDK, so it bypasses
@@ -130,7 +127,7 @@ receivers:
             # The same bind host as the endpoint it scrapes, set under
             # service::telemetry below, so the target follows the listener.
             - targets:
-                - ${env:OTELBOX_BIND_HOST}:8888
+                - ${env:OTELBOX_BIND_HOST:-127.0.0.1}:8888
 
 processors:
   # Origin, and origin is the one thing the roles do not share — running this on
@@ -141,21 +138,14 @@ processors:
     timeout: 2s
     override: false
 
-  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
-  # Memory is expressed as a percentage rather than a fixed MiB figure because
-  # the same profile may run in a memory-limited container, as a bare host
-  # process or on a workstation, and the percentage resolves against the cgroup
-  # quota where there is one and against system memory where there is not.
-  #
-  # It gates on live Go heap, so it sees neither RSS nor the memory-mapped WAL
-  # above. Refusal is driven by the soft limit alone, which is
-  # (limit − spike); the spike figure is the most the heap may grow inside one
-  # check interval, and it is measurable rather than a rule of thumb.
+  # A fixed ceiling is meaningful for a workstation process; a percentage of
+  # host RAM is not. The limiter observes Go heap, not RSS or mapped WAL pages.
   memory_limiter:
     check_interval: 1s
-    limit_percentage: 50
-    spike_limit_percentage: 10
+    limit_mib: ${env:OTELBOX_MEMORY_LIMIT_MIB:-400}
+    spike_limit_mib: ${env:OTELBOX_MEMORY_SPIKE_LIMIT_MIB:-80}
 
+  # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
   # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
   # drop every attribute nobody enumerated, leaving healthy-looking empty
   # telemetry. Add patterns in all three profiles or in none.
@@ -192,6 +182,9 @@ exporters:
       enabled: true
       # Bound to the WAL above, so enqueue means persisted.
       storage: file_storage/gateway
+      # Two workers bound concurrency without serialising every export. The
+      # deployment may raise this only together with its memory budget.
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       # Bytes, because it is the only unit commensurable with the file cap it
       # has to stay under; an item count blocks whatever the items weigh. Keep
       # it below that cap so the overflow policy binds before a storage write
@@ -210,8 +203,8 @@ exporters:
       batch:
         flush_timeout: 200ms
         sizer: bytes
-        min_size: 1048576
-        max_size: 8388608
+        min_size: 524288
+        max_size: 1572864
     retry_on_failure:
       enabled: true
       initial_interval: 5s
@@ -245,7 +238,7 @@ service:
         - pull:
             exporter:
               prometheus:
-                host: ${env:OTELBOX_BIND_HOST}
+                host: ${env:OTELBOX_BIND_HOST:-127.0.0.1}
                 port: 8888
   pipelines:
     # Same shape in all signals: detection must precede redaction so what it

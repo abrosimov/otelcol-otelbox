@@ -15,32 +15,14 @@ dist:
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.157.0
-  # Backlog replay — reads JSON only, so the backlog cannot be proto or zstd.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.157.0
   # All three roles scrape their own endpoint through this, so operational
-  # metrics take the same durable, queued path as everything else. Costs ~67 MB.
+  # metrics take the same durable, queued path as everything else.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filestatsreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/httpcheckreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/tcpcheckreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/tlscheckreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/sshcheckreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/ntpreceiver v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/macosunifiedloggingreceiver v0.157.0
   # Linux-only, and it execs the `journalctl` binary rather than reading the
   # journal itself — so only the host-agent role can wire it, never the
   # `FROM scratch` gateway image, which has no binary to exec.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/journaldreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/podmanreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/osqueryreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/sqlqueryreceiver v0.157.0
-  # Needs the service.profilesSupport feature gate, off by default.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/pprofreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/githubreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/gitlabreceiver v0.157.0
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.157.0
@@ -49,24 +31,14 @@ processors:
   # boundary. Every role batches inside `sending_queue` after durable enqueue.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.157.0
-  # OTTL. redaction masks attributes and a map-shaped body only; Claude Code's
-  # raw API bodies arrive as a string body, which only transform can rewrite.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.157.0
+  # Selects the trace subset that has an additional required recipient.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/remotetapprocessor v0.157.0
-  # Collapsed records keep their count in the `log_count` attribute.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/logdedupprocessor v0.157.0
-  # The per-process metric aggregation path, which nothing wires yet: collapsing
-  # per-PID series needs both of these, and monotonic sums must pass
-  # `cumulative_to_delta` before the resource identity is destroyed. See
-  # AGENTS.md "The process scraper" before reaching for either.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbyattrsprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.157.0
 
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.157.0
+  # CI backend double only. Role profiles never use an unaudited local sink.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/alertmanagerexporter v0.157.0
 
 extensions:
   # The only health check, wired by all three roles. Development stability where
@@ -75,18 +47,4 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.157.0
-  # Linked ahead of a delegated-token design that is not decided yet; nothing
-  # wires either, and a static bearer token remains the credential today.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/oidcauthextension v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/oauth2clientauthextension v0.157.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/remotetapextension v0.157.0
-  # Development stability; bind to loopback only.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/mcp v0.157.0
-
-connectors:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/countconnector v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/sumconnector v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/signaltometricsconnector v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/otlpjsonconnector v0.157.0

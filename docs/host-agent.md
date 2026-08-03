@@ -1,7 +1,7 @@
 # Operating the host-agent role
 
-The host agent collects the machine's own metrics, Docker statistics, selected
-journal units, neighbouring Prometheus targets and its own Collector metrics.
+The host agent collects the machine's own metrics, selected journal units,
+neighbouring Prometheus targets and its own Collector metrics.
 It redacts and persists them before sending to the gateway. Load
 [the profile](../config/host-agent.yaml) on its own:
 
@@ -17,25 +17,28 @@ shell and cannot run this receiver.
 
 | Variable | Meaning |
 | --- | --- |
-| `OTELBOX_BIND_HOST` | Address used by the self-metrics reader and self-scrape target. Conventionally loopback for a host process. |
-| `OTELBOX_HEALTH_ENDPOINT` | Complete `host:port` for `healthcheckv2`; choose a port distinct from a co-located gateway. |
 | `OTELBOX_STORAGE_DIR` | Private writable root for the outbound WAL, compaction files and journald cursor. |
 | `OTELBOX_UPSTREAM_ENDPOINT` | Gateway OTLP/gRPC `host:port`. |
 | `OTELBOX_UPSTREAM_AUTH_HEADER_FILE` | File containing the complete value `Bearer <token>`. |
-| `OTELBOX_DOCKER_ENDPOINT` | Docker API endpoint for `docker_stats`, preferably a least-privilege read-only proxy. |
 | `OTELBOX_SCRAPE_TARGET_1`, `OTELBOX_SCRAPE_TARGET_2` | Prometheus `host:port` targets for neighbouring services. |
 | `OTELBOX_JOURNAL_UNIT_1`, `OTELBOX_JOURNAL_UNIT_2` | Exact journal units to follow. Do not include the host agent's own unit. |
 
-Optional capacity values are `OTELBOX_STORAGE_MAX_SIZE_BYTES` (5 GiB per signal
-file) and `OTELBOX_QUEUE_SIZE_BYTES` (4 GiB per signal queue). The role exports
-metrics and logs, so reserve space for both files plus compaction headroom and
-the independent journald cursor.
+Reference defaults are `OTELBOX_BIND_HOST=127.0.0.1`,
+`OTELBOX_HEALTH_ENDPOINT=127.0.0.1:14324`, `OTELBOX_MEMORY_LIMIT_MIB=400`,
+`OTELBOX_MEMORY_SPIKE_LIMIT_MIB=80`, `OTELBOX_EXPORTER_CONSUMERS=2`,
+`OTELBOX_STORAGE_MAX_SIZE_BYTES=6442450944` and
+`OTELBOX_QUEUE_SIZE_BYTES=4294967296`. The role exports metrics and logs, so
+reserve both signal files, compaction headroom and the independent journald
+cursor. Render production queue capacity from measured peak rate and required
+outage duration.
 
 ## Local visibility and privileges
 
-The raw Docker socket is equivalent to host root. The endpoint variable exists
-so a deployment can provide a constrained proxy instead of mounting that
-socket.
+Container statistics are deliberately absent from the first rootless Podman
+profile. `podman_stats` needs the Podman service API, and a raw user socket is a
+control-plane capability rather than a read-only telemetry source. Add
+container-level collection only after the consuming repository defines and
+tests a constrained API proxy or a cgroup/systemd-unit alternative.
 
 The journal allowlist is deliberately finite: exporting the whole journal would
 move kernel, authentication and unrelated service records through a pipeline
@@ -70,6 +73,8 @@ would merely miss every collection cycle during the wait. The WAL therefore
 retains a bounded outage and rejects new samples at capacity. Monitor capacity
 well before that boundary.
 
+The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope.
+
 ## Endpoints and validation
 
 The role publishes detailed Collector metrics at
@@ -83,7 +88,6 @@ OTELBOX_HEALTH_ENDPOINT=127.0.0.1:14324 \
 OTELBOX_STORAGE_DIR=/tmp/otelbox-host-agent \
 OTELBOX_UPSTREAM_ENDPOINT=127.0.0.1:14319 \
 OTELBOX_UPSTREAM_AUTH_HEADER_FILE=/tmp/otelbox-host-agent-auth-header \
-OTELBOX_DOCKER_ENDPOINT=tcp://127.0.0.1:2375 \
 OTELBOX_SCRAPE_TARGET_1=127.0.0.1:19001 \
 OTELBOX_SCRAPE_TARGET_2=127.0.0.1:19002 \
 OTELBOX_JOURNAL_UNIT_1=ssh.service \
@@ -91,7 +95,7 @@ OTELBOX_JOURNAL_UNIT_2=cron.service \
   otelcol-otelbox validate --config config/host-agent.yaml
 ```
 
-`validate` does not start `resource_detection`, `host_metrics`, Docker or
+`validate` does not start `resource_detection`, `host_metrics` or
 `journalctl`. A runtime smoke test must be performed on the intended host with
 the intended service account. Command sandboxes that deny the boot-time sysctl
 make `resource_detection/system` fail at startup even when the configuration is

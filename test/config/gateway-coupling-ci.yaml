@@ -1,21 +1,21 @@
 # otelbox — GATEWAY ROLE, BACKEND-COUPLING CI OVERLAY. Loaded SECOND, only by
-# test/harness (TestBackendCouplingUnderQueuePressure):
+# test/harness (TestRequiredRecipientCouplingUnderQueuePressure):
 #
 #   otelcol-otelbox --config config/gateway.yaml \
 #                   --config test/config/gateway-coupling-ci.yaml
 #
 # CI ONLY, never copied into a deployment. A second gateway overlay because
 # gateway-ci.yaml's `file` sink cannot be stopped and its queue cannot fill:
-# this one keeps both real exporters, `block_on_overflow`, both WALs and the
-# deployed fan-out, and points them at two processes the test can kill.
+# this one adds a second all-signal recipient to the reference recipient and
+# points both at processes the test can control.
 #
 # Only queue sizes, plaintext test transport and ports move, and none of them is
-# what is asserted: the claim is that a *full* queue couples the backends, not
+# what is asserted: the claim is that a *full* queue couples the recipients, not
 # how long the deployed queue takes to fill.
 #
 # Environment, minus OTELBOX_BIND_HOST and OTELBOX_HEALTH_ENDPOINT, which this
-# layer replaces every reference to, and minus the two backend endpoints, which
-# it replaces with the CI doubles: OTELBOX_INGEST_TOKEN_FILE,
+# layer replaces every reference to, and minus the reference recipient endpoint,
+# which it replaces with the CI double: OTELBOX_INGEST_TOKEN_FILE,
 # OTELBOX_STORAGE_DIR, OTELBOX_CI_HEALTHY_ENDPOINT, OTELBOX_CI_STALLED_ENDPOINT.
 
 extensions:
@@ -24,6 +24,17 @@ extensions:
       # A port of its own inside the 34xxx block: this gateway runs alongside
       # the delivery test's, and two processes cannot share one listener.
       endpoint: 127.0.0.1:34135
+
+  file_storage/coupling_stalled:
+    directory: ${env:OTELBOX_STORAGE_DIR}/coupling_stalled
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES:-12884901888}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/coupling_stalled
+      cleanup_on_start: true
 
 receivers:
   # `auth:` is inherited from the role profile and still enforced — a later
@@ -49,7 +60,7 @@ receivers:
                 - 127.0.0.1:34899
 
 exporters:
-  otlp_grpc/backend_1:
+  otlp_grpc/all_signals:
     endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
     # The backend doubles speak plaintext; production exporters retain secure
     # defaults.
@@ -59,18 +70,44 @@ exporters:
       # Eight times the other queue: this backend stays up and must never be the
       # thing that blocks, or a stall could not be attributed to its neighbour.
       queue_size: 16777216
-  otlp_grpc/backend_2:
+  otlp_grpc/coupling_stalled:
     endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
+    compression: gzip
+    timeout: 10s
     tls:
       insecure: true
     sending_queue:
+      enabled: true
+      storage: file_storage/coupling_stalled
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
+      sizer: bytes
       # Cannot usefully go lower: upstream refuses a queue below the sender
       # batcher's inherited 1 MiB `min_size`, and a single record must still
       # fit, since a request larger than the queue is rejected rather than
       # blocked.
       queue_size: 2097152
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
 
 service:
+  # Lists replace rather than merge, so the overlay restates the reference
+  # extensions while adding the test-only WAL.
+  extensions:
+    - healthcheckv2
+    - bearertokenauth/ingest
+    - headers_setter/selected_traces
+    - file_storage/all_signals
+    - file_storage/selected_traces
+    - file_storage/coupling_stalled
   telemetry:
     metrics:
       readers:
@@ -80,13 +117,20 @@ service:
                 host: 127.0.0.1
                 port: 34899
   pipelines:
-    # Repointed rather than deleted, because a later layer cannot remove a key:
-    # left alone, `prometheus/self` would push a steady metrics stream through
-    # the very queues whose fill rate this scenario measures. The replacement is
-    # the OTLP receiver, which is already built and harmless here — the scenario
-    # posts logs, which never reach a metrics pipeline. Every other pipeline is
-    # inherited whole, so the fan-out under test is the published one.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets]
+      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+    # Repointing prevents the self-scrape from changing the queue-fill rate.
     metrics/self:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/backend_1, otlp_grpc/backend_2]
+      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]

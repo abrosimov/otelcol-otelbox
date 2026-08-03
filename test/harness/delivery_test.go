@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEdgeToGatewayDelivery(t *testing.T) {
@@ -21,27 +22,28 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 	unauthorisedMarker := "otelbox-ci-unauthorised-" + randomHex(t, 8)
 
 	gatewayEndpoint := fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort)
+	selectedContract := newSelectedTraceContract(t, state, selectedTraceEndpoint)
+	selectedBackend := startSelectedTraceBackend(t, selectedContract)
 
 	writeTokenFile(t, tokenFile, validToken)
 
 	chain := mintGatewayChain(t, state)
+	gatewayEnv := map[string]string{
+		"OTELBOX_INGEST_TOKEN_FILE":    tokenFile,
+		"OTELBOX_STORAGE_DIR":          filepath.Join(state, "gateway-storage"),
+		"OTELBOX_CI_SINK":              sink,
+		"OTELBOX_CI_GATEWAY_CERT_FILE": chain.certFile,
+		"OTELBOX_CI_GATEWAY_KEY_FILE":  chain.keyFile,
+		// The CI overlay removes this exporter from ordinary pipelines, but
+		// environment expansion still traverses its configured endpoint.
+		"OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT": "127.0.0.1:34398",
+	}
+	selectedContract.addEnv(gatewayEnv)
 
 	gateway := startCollector(t, collectorSpec{
 		name:     "gateway",
 		stateDir: state,
-		env: map[string]string{
-			"OTELBOX_INGEST_TOKEN_FILE":    tokenFile,
-			"OTELBOX_STORAGE_DIR":          filepath.Join(state, "gateway-storage"),
-			"OTELBOX_CI_SINK":              sink,
-			"OTELBOX_CI_GATEWAY_CERT_FILE": chain.certFile,
-			"OTELBOX_CI_GATEWAY_KEY_FILE":  chain.keyFile,
-			// The CI overlay takes both backend exporters out of every pipeline,
-			// so neither endpoint is dialled — but expansion runs over the merged
-			// map and a key cannot be removed by a later layer, so both are still
-			// expanded at load.
-			"OTELBOX_BACKEND_1_ENDPOINT": "127.0.0.1:34398",
-			"OTELBOX_BACKEND_2_ENDPOINT": "127.0.0.1:34399",
-		},
+		env:      gatewayEnv,
 		configs: []string{
 			configPath("config", "gateway.yaml"),
 			configPath("test", "config", "gateway-ci.yaml"),
@@ -56,7 +58,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			env: map[string]string{
 				// A WAL per edge run, never a shared one: a record enqueued by
 				// the happy-path edge would otherwise replay under the second
-				// edge's credential, and assertion 3 would report on the wrong
+				// edge's credential, and assertion 4 would report on the wrong
 				// record.
 				"OTELBOX_STORAGE_DIR":       filepath.Join(state, name+"-storage"),
 				"OTELBOX_UPSTREAM_ENDPOINT": gatewayEndpoint,
@@ -87,6 +89,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 					"otelcol_exporter_sent", "otelcol_exporter_send_failed",
 					"otelcol_exporter_enqueue_failed", "otelcol_exporter_queue")},
 				{fmt.Sprintf("sink (%d bytes)", sinkSize(sink)), sinkTail(sink, 10)},
+				{"selected-traces backend", selectedBackend.diagnostics()},
 			},
 			append([]*collector{gateway}, edges...)...)
 	}()
@@ -98,14 +101,14 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		t.Fatalf("the gateway never accepted a connection: %v", err)
 	}
 
-	// Precondition, not an assertion. Assertion 3 claims that a wrong token
+	// Precondition, not an assertion. Assertion 4 claims that a wrong token
 	// stops delivery; that claim is worthless unless the gateway is checking
 	// tokens at all. Remove `auth:` from the receiver, or the extension from the
 	// config, and this returns 200 and the run fails here — which is the point.
 	t.Run("precondition: the gateway rejects unauthenticated ingest", func(t *testing.T) {
 		status := gatewayUnauthenticatedStatus(gatewayHTTPPort)
 		if status != http.StatusUnauthorized {
-			t.Fatalf("unauthenticated ingest returned HTTP %d, expected 401 — the gateway is not enforcing bearertokenauth/ingest, so assertion 3 below cannot prove anything", status)
+			t.Fatalf("unauthenticated ingest returned HTTP %d, expected 401 — the gateway is not enforcing bearertokenauth/ingest, so assertion 4 below cannot prove anything", status)
 		}
 	})
 
@@ -148,7 +151,43 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}
 	})
 
-	t.Run("assertion 3: an edge with a token outside the gateway's allowlist drops data, visibly", func(t *testing.T) {
+	t.Run("assertion 3: only classified traces reach the required HTTP recipient with its protocol headers", func(t *testing.T) {
+		ordinaryMarker := "otelbox-ci-ordinary-trace-" + randomHex(t, 8)
+		selectedMarker := "otelbox-ci-selected-trace-" + randomHex(t, 8)
+
+		if !sendTraceOrFail(t, "ordinary trace routing", edgeHTTPPort,
+			tracePayload(t, ordinaryMarker, false)) {
+			return
+		}
+		if !sendTraceOrFail(t, "selected trace routing", edgeHTTPPort,
+			tracePayload(t, selectedMarker, true)) {
+			return
+		}
+
+		for marker, description := range map[string]string{
+			ordinaryMarker: "ordinary trace",
+			selectedMarker: "selected trace",
+		} {
+			if err := poll(deliveryTimeout, edge, description+" to reach the ordinary recipient", func() bool {
+				return sinkContains(t, sink, marker)
+			}); err != nil {
+				t.Fatalf("%s marker %s did not reach the ordinary recipient: %v", description, marker, err)
+			}
+		}
+		if err := poll(deliveryTimeout, gateway, "selected trace to reach the HTTP recipient", func() bool {
+			return selectedBackend.contains(selectedMarker)
+		}); err != nil {
+			t.Fatalf("selected trace marker %s did not reach the HTTP recipient: %v; %s",
+				selectedMarker, err, selectedBackend.diagnostics())
+		}
+		if err := staysFalse(2*time.Second, gateway, "ordinary trace reached the selected-traces recipient", func() bool {
+			return selectedBackend.contains(ordinaryMarker)
+		}); err != nil {
+			t.Fatalf("the traces-only route leaked an unclassified trace: %v; %s", err, selectedBackend.diagnostics())
+		}
+	})
+
+	t.Run("assertion 4: an edge with a token outside the gateway's allowlist drops data, visibly", func(t *testing.T) {
 		edge.stop(t)
 
 		wrongTokenEdge := startEdge("edge-wrong-token", wrongToken)
@@ -169,7 +208,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			t.Fatalf("the gateway's certificate does not verify against the CA the edge was handed, so a dropped record below would be a TLS fault and this assertion would say nothing about the allowlist: %v", err)
 		}
 
-		if !sendOrFail(t, "assertion 3", edgeHTTPPort,
+		if !sendOrFail(t, "assertion 4", edgeHTTPPort,
 			logPayload(t, unauthorisedMarker, "otelbox integration test record")) {
 			return
 		}
@@ -207,17 +246,40 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			t.Logf("the edge log carries the incident's error, as expected:\n%s", line)
 		}
 	})
+
+	t.Run("assertion 5: replacing the last allowlisted token revokes the previous one", func(t *testing.T) {
+		replacementToken := "otelbox-ci-rotated-" + randomHex(t, 16)
+		writeTokenFile(t, tokenFile, replacementToken)
+
+		if err := poll(readyTimeout, gateway, "the rotated allowlist to take effect", func() bool {
+			oldStatus, _, _ := postLogs(probeClient, gatewayHTTPPort, validToken, emptyLogsPayload)
+			newStatus, _, _ := postLogs(probeClient, gatewayHTTPPort, replacementToken, emptyLogsPayload)
+			return oldStatus == http.StatusUnauthorized && newStatus == http.StatusOK
+		}); err != nil {
+			t.Fatalf("the old token stayed active or its replacement never became active: %v", err)
+		}
+
+		// Pinned v0.157 keeps the previous value on an empty-file reload. A random
+		// non-client token is the explicit last-token revocation operation.
+		revocationToken := "otelbox-ci-revoked-" + randomHex(t, 16)
+		writeTokenFile(t, tokenFile, revocationToken)
+		if err := poll(readyTimeout, gateway, "last-token revocation to take effect", func() bool {
+			oldStatus, _, _ := postLogs(probeClient, gatewayHTTPPort, replacementToken, emptyLogsPayload)
+			guardStatus, _, _ := postLogs(probeClient, gatewayHTTPPort, revocationToken, emptyLogsPayload)
+			return oldStatus == http.StatusUnauthorized && guardStatus == http.StatusOK
+		}); err != nil {
+			t.Fatalf("replacing the last client token did not revoke it: %v", err)
+		}
+	})
 }
 
-// The allowlist, in the format bearertokenauthextension parses: one token per
-// line, first whitespace-delimited field is the token, the rest is a comment.
-// The trailing comment is not decoration — it is the format assertion. A change
-// upstream that stopped ignoring it would break this test rather than a server.
+// The profile contract is stricter than the pinned parser: one URL-safe token
+// per line and no ignored comment suffix that an audit tool could interpret as
+// part of the credential.
 func writeTokenFile(t *testing.T, path, token string) {
 	t.Helper()
 
-	line := token + "  otelbox integration test — the only credential this gateway accepts\n"
-	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatalf("could not write the gateway's token allowlist to %s: %v", path, err)
 	}
 }

@@ -270,14 +270,14 @@ jobs:
           state="$(mktemp -d)"
 
           # Real files: a validation that passed on a path pointing at nothing
-          # would be weaker than one that does not. The two formats differ and
-          # nothing warns — `bearertokenauth` takes the bare token up to the
-          # first whitespace and prepends the scheme, `headers_setter`
-          # TrimSpace's the whole file and prepends nothing, so a comment in the
-          # second would become part of the header value.
-          printf 'ci-validation-placeholder  not a real credential\n' \
+          # would be weaker than one that does not. The ingest contract is one
+          # bare URL-safe token per line; outbound header files contain their
+          # complete values including the scheme.
+          printf 'ci-validation-placeholder\n' \
             > "${state}/ingest-tokens"
           printf 'Bearer ci-validation-placeholder\n' > "${state}/auth-header"
+          printf 'Basic ci-validation-placeholder\n' \
+            > "${state}/selected-traces-auth-header"
 
           # Dummies are still required for every non-numeric reference. Contrary
           # to what this workflow used to claim, an unset variable is NOT a load
@@ -299,8 +299,11 @@ jobs:
           OTELBOX_HEALTH_ENDPOINT=0.0.0.0:14323 \
           OTELBOX_STORAGE_DIR="${state}/gateway" \
           OTELBOX_INGEST_TOKEN_FILE="${state}/ingest-tokens" \
-          OTELBOX_BACKEND_1_ENDPOINT=127.0.0.1:14317 \
-          OTELBOX_BACKEND_2_ENDPOINT=127.0.0.1:24317 \
+          OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT=127.0.0.1:14317 \
+          OTELBOX_SELECTED_TRACES_ENDPOINT=https://example.invalid/otel \
+          OTELBOX_SELECTED_TRACES_AUTH_HEADER_FILE="${state}/selected-traces-auth-header" \
+          OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_NAME=x-otelbox-validation-version \
+          OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE=validation-v1 \
             ./otelcol-otelbox_linux_amd64 validate --config config/gateway.yaml
 
           echo "--- host agent: config/host-agent.yaml"
@@ -309,7 +312,6 @@ jobs:
           OTELBOX_STORAGE_DIR="${state}/host-agent" \
           OTELBOX_UPSTREAM_ENDPOINT=127.0.0.1:14319 \
           OTELBOX_UPSTREAM_AUTH_HEADER_FILE="${state}/auth-header" \
-          OTELBOX_DOCKER_ENDPOINT=tcp://127.0.0.1:2375 \
           OTELBOX_SCRAPE_TARGET_1=127.0.0.1:19001 \
           OTELBOX_SCRAPE_TARGET_2=127.0.0.1:19002 \
           OTELBOX_JOURNAL_UNIT_1=ssh.service \
@@ -587,7 +589,11 @@ jobs:
           - a record acknowledged by the edge while the gateway was unavailable
             survived a forced edge process termination and was delivered after
             both processes returned;
-          - under queue pressure, a stopped gateway backend left its healthy
+          - only classified traces reached the generic OTLP/HTTP recipient with
+            its required authorisation and protocol headers, and its WAL replayed
+            an acknowledged trace after a forced gateway termination;
+          - non-empty bearer allowlist replacement revoked the previous token;
+          - under queue pressure, a stopped gateway recipient left its healthy
             neighbour and ingest untouched until its own queue filled, then
             backpressured the receiver through synchronous fan-out.
 

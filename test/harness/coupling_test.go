@@ -30,13 +30,13 @@ const (
 	recoveryTimeout = 120 * time.Second
 )
 
-// A gateway fans out to two backends, both with `block_on_overflow: true`, and
+// A gateway fans out to required recipients with `block_on_overflow: true`, and
 // fan-out in the collector is synchronous on the caller's goroutine
 // (`internal/fanoutconsumer`). Queue headroom isolates an outage; a full queue
-// sends backpressure through ingest even when the other backend is healthy. A
-// runbook in a consuming repository claims the backends are always independent;
+// sends backpressure through ingest even when another recipient is healthy. A
+// runbook in a consuming repository claims the recipients are always independent;
 // this test fixes the boundary in both directions.
-func TestBackendCouplingUnderQueuePressure(t *testing.T) {
+func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 	state := t.TempDir()
 	healthySink := filepath.Join(state, "healthy-sink.json")
 	stalledSink := filepath.Join(state, "stalled-sink.json")
@@ -45,8 +45,9 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 
 	// One allowlist for every client, so the token posted below is the one the
 	// gateway loads — and a wrong one surfaces as the receiver's own 401 on the
-	// first subtest's post rather than as a healthy backend receiving nothing.
+	// first subtest's post rather than as a healthy recipient receiving nothing.
 	writeTokenFile(t, tokenFile, ingestToken)
+	selectedContract := newSelectedTraceContract(t, state, selectedTraceEndpoint)
 
 	healthyBackend := startBackend(t, state, "backend-healthy",
 		healthyBackendEndpoint, healthySink, healthyBackendMetricsPort)
@@ -56,21 +57,24 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 		t.Fatalf("the backend that is supposed to stay up never came up: %v", err)
 	}
 
-	// The other backend is deliberately not started. Its exporter therefore
+	// The other recipient is deliberately not started. Its exporter therefore
 	// fails every export, retries for ever (max_elapsed_time: 0s) and holds
 	// everything it was handed in its queue.
+	gatewayEnv := map[string]string{
+		"OTELBOX_INGEST_TOKEN_FILE":   tokenFile,
+		"OTELBOX_STORAGE_DIR":         filepath.Join(state, "gateway-storage"),
+		"OTELBOX_CI_HEALTHY_ENDPOINT": healthyBackendEndpoint,
+		"OTELBOX_CI_STALLED_ENDPOINT": stalledBackendEndpoint,
+		// Expansion traverses the reference profile before the overlay replaces
+		// this endpoint with the healthy test double.
+		"OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT": "127.0.0.1:34398",
+	}
+	selectedContract.addEnv(gatewayEnv)
+
 	gateway := startCollector(t, collectorSpec{
 		name:     "coupling-gateway",
 		stateDir: state,
-		env: map[string]string{
-			"OTELBOX_INGEST_TOKEN_FILE": tokenFile,
-			"OTELBOX_STORAGE_DIR":       filepath.Join(state, "gateway-storage"),
-			// The overlay points both backend exporters here, replacing the
-			// profile's OTELBOX_BACKEND_{1,2}_ENDPOINT references outright, so
-			// nothing supplies those.
-			"OTELBOX_CI_HEALTHY_ENDPOINT": healthyBackendEndpoint,
-			"OTELBOX_CI_STALLED_ENDPOINT": stalledBackendEndpoint,
-		},
+		env:      gatewayEnv,
 		configs: []string{
 			configPath("config", "gateway.yaml"),
 			configPath("test", "config", "gateway-coupling-ci.yaml"),
@@ -91,8 +95,8 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 				{"gateway queue metrics", exporterMetrics(couplingGatewayMetricsPort,
 					"otelcol_exporter_queue_size", "otelcol_exporter_queue_capacity",
 					"otelcol_exporter_send_failed", "otelcol_exporter_enqueue_failed")},
-				{fmt.Sprintf("healthy backend sink (%d bytes)", sinkSize(healthySink)), sinkTail(healthySink, 5)},
-				{fmt.Sprintf("stalled backend sink (%d bytes)", sinkSize(stalledSink)), sinkTail(stalledSink, 5)},
+				{fmt.Sprintf("healthy recipient sink (%d bytes)", sinkSize(healthySink)), sinkTail(healthySink, 5)},
+				{fmt.Sprintf("stalled recipient sink (%d bytes)", sinkSize(stalledSink)), sinkTail(stalledSink, 5)},
 			},
 			collectors...)
 	}()
@@ -122,19 +126,19 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 	headroomMarker := "otelbox-ci-headroom-" + randomHex(t, 8)
 	pressureMarker := ""
 
-	t.Run("a stopped backend with queue headroom does not affect the healthy backend", func(t *testing.T) {
+	t.Run("a stopped recipient with queue headroom does not affect the healthy recipient", func(t *testing.T) {
 		if err := send(t, headroomMarker); err != nil {
 			t.Fatalf("could not post the first record to the gateway: %v", err)
 		}
-		if err := poll(deliveryTimeout, gateway, "marker "+headroomMarker+" to reach the healthy backend", func() bool {
+		if err := poll(deliveryTimeout, gateway, "marker "+headroomMarker+" to reach the healthy recipient", func() bool {
 			return sinkContains(t, healthySink, headroomMarker)
 		}); err != nil {
-			t.Fatalf("marker %s never reached the healthy backend while the other backend was down but its queue still had headroom. The two backends are supposed to be independent until a queue fills, so either the gateway is not fanning out at all or the healthy leg is broken: %v",
+			t.Fatalf("marker %s never reached the healthy recipient while the other recipient was down but its queue still had headroom. Required recipients are isolated until a queue fills, so either the gateway is not fanning out at all or the healthy leg is broken: %v",
 				headroomMarker, err)
 		}
 	})
 
-	t.Run("a stopped backend whose queue has filled backpressures ingest", func(t *testing.T) {
+	t.Run("a stopped recipient whose queue has filled backpressures ingest", func(t *testing.T) {
 		for record := 1; record <= fillMaxRecords; record++ {
 			marker := fmt.Sprintf("otelbox-ci-fill-%02d-%s", record, randomHex(t, 4))
 
@@ -152,23 +156,23 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 				pressureMarker = marker
 				break
 			}
-			if err := poll(fillProbeTimeout, gateway, "marker "+marker+" to reach the healthy backend", func() bool {
+			if err := poll(fillProbeTimeout, gateway, "marker "+marker+" to reach the healthy recipient", func() bool {
 				return sinkContains(t, healthySink, marker)
 			}); err != nil {
-				t.Fatalf("record %d was acknowledged but marker %s did not reach the healthy backend: %v", record, marker, err)
+				t.Fatalf("record %d was acknowledged but marker %s did not reach the healthy recipient: %v", record, marker, err)
 			}
 		}
 
 		if pressureMarker == "" {
-			t.Fatalf("the gateway acknowledged all %d records while the other backend was down: the stalled exporter's queue never applied backpressure, so this scenario proved nothing about coupling. Its queue_size in test/config/gateway-coupling-ci.yaml is what needs to be smaller, or the padding larger — do not conclude from this that the backends are independent",
+			t.Fatalf("the gateway acknowledged all %d records while the other recipient was down: the stalled exporter's queue never applied backpressure, so this scenario proved nothing about coupling. Its queue_size in test/config/gateway-coupling-ci.yaml is what needs to be smaller, or the padding larger — do not conclude from this that the recipients are independent",
 				fillMaxRecords)
 		}
 
-		if err := poll(failureTimeout, gateway, "the blocked backend's enqueue-failure metric", func() bool {
+		if err := poll(failureTimeout, gateway, "the blocked recipient's enqueue-failure metric", func() bool {
 			return exporterMetricPositive(couplingGatewayMetricsPort,
-				"otelcol_exporter_enqueue_failed", "otlp_grpc/backend_2")
+				"otelcol_exporter_enqueue_failed", "otlp_grpc/coupling_stalled")
 		}); err != nil {
-			t.Fatalf("ingest timed out but otlp_grpc/backend_2 reported no enqueue failure, so the timeout cannot be attributed to its full queue: %v\n%s", err,
+			t.Fatalf("ingest timed out but otlp_grpc/coupling_stalled reported no enqueue failure, so the timeout cannot be attributed to its full queue: %v\n%s", err,
 				exporterMetrics(couplingGatewayMetricsPort,
 					"otelcol_exporter_queue_size", "otelcol_exporter_queue_capacity",
 					"otelcol_exporter_enqueue_failed"))
@@ -178,39 +182,39 @@ func TestBackendCouplingUnderQueuePressure(t *testing.T) {
 			t.Fatal("the gateway listener stopped responding even to an unauthenticated probe; this was not pipeline backpressure on an otherwise live process")
 		}
 
-		t.Logf("the full stopped-backend queue backpressured ingest while the gateway remained live; gateway queues:\n%s",
+		t.Logf("the full stopped-recipient queue backpressured ingest while the gateway remained live; gateway queues:\n%s",
 			exporterMetrics(couplingGatewayMetricsPort,
 				"otelcol_exporter_queue_size", "otelcol_exporter_queue_capacity",
 				"otelcol_exporter_enqueue_failed"))
 	})
 
-	t.Run("the backlog drains and ingest recovers once the stopped backend returns", func(t *testing.T) {
+	t.Run("the backlog drains and ingest recovers once the stopped recipient returns", func(t *testing.T) {
 		if pressureMarker == "" {
 			t.Skip("no backpressure was observed, so there is nothing to clear")
 		}
 
 		stalledBackend = startBackend(t, state, "backend-stalled",
 			stalledBackendEndpoint, stalledSink, stalledBackendMetricsPort)
-		if err := poll(readyTimeout, stalledBackend, "the recovered backend's OTLP listener", func() bool {
+		if err := poll(readyTimeout, stalledBackend, "the recovered recipient's OTLP listener", func() bool {
 			return endpointAccepts(stalledBackendEndpoint)
 		}); err != nil {
-			t.Fatalf("the backend that was supposed to come back never did, so the stall cannot be attributed: %v", err)
+			t.Fatalf("the recipient that was supposed to come back never did, so the stall cannot be attributed: %v", err)
 		}
 
 		if err := poll(recoveryTimeout, gateway, "the acknowledged backlog to reach the recovered backend", func() bool {
 			return sinkContains(t, stalledSink, headroomMarker)
 		}); err != nil {
-			t.Fatalf("marker %s was acknowledged while the backend was stopped but never reached it after recovery: %v",
+			t.Fatalf("marker %s was acknowledged while the recipient was stopped but never reached it after recovery: %v",
 				headroomMarker, err)
 		}
 
 		recoveryMarker := "otelbox-ci-recovered-" + randomHex(t, 8)
 		if err := send(t, recoveryMarker); err != nil {
-			t.Fatalf("the gateway did not resume accepting posts after the backend returned: %v", err)
+			t.Fatalf("the gateway did not resume accepting posts after the recipient returned: %v", err)
 		}
 		for path, name := range map[string]string{
-			healthySink: "healthy backend",
-			stalledSink: "recovered backend",
+			healthySink: "healthy recipient",
+			stalledSink: "recovered recipient",
 		} {
 			if err := poll(deliveryTimeout, gateway, "marker "+recoveryMarker+" to reach the "+name, func() bool {
 				return sinkContains(t, path, recoveryMarker)

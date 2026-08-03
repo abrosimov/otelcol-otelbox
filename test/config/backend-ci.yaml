@@ -3,13 +3,13 @@
 #
 #   otelcol-otelbox --config test/config/backend-ci.yaml
 #
-# CI ONLY, never copied into a deployment. It stands in for the gateway's two
-# backends in the coupling scenario, which needs a backend that can be
+# CI ONLY, never copied into a deployment. It stands in for ordinary gRPC
+# recipients in the coupling scenario, which needs a recipient that can be
 # *stopped* — a process can be killed, a file handle cannot. Trivial on purpose:
 # receiver straight to file, no processors, so nothing it did to the data could
 # be attributed to the collector under test.
 #
-# Two run side by side, so every endpoint and path comes from the environment:
+# Instances run side by side, so every endpoint and path comes from the environment:
 # OTELBOX_CI_BACKEND_ENDPOINT, OTELBOX_CI_BACKEND_SINK,
 # OTELBOX_CI_BACKEND_METRICS_PORT.
 

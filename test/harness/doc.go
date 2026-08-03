@@ -28,7 +28,7 @@
 // TestEdgeToGatewayDelivery:
 //
 //  0. Precondition — the gateway rejects unauthenticated ingest (HTTP 401). Not
-//     one of the three assertions; it is the guard that keeps assertion 3
+//     one of the five assertions; it is the guard that keeps assertion 4
 //     honest. Delete the authenticator and this fails first, so assertion 3 can
 //     never pass by proving nothing.
 //  1. Happy path — a log posted to the edge reaches the gateway's sink. One
@@ -38,7 +38,11 @@
 //     while the record carrying them does. The privacy invariant the collector
 //     exists for, and the one the role profiles carry an identical
 //     redaction/secrets block in order to keep.
-//  3. The regression above — an edge holding a token that is not in the
+//  3. Selected routing — an ordinary trace reaches only the ordinary recipient,
+//     while a trace classified with `otelbox.telemetry.class=llm` additionally
+//     reaches the OTLP/HTTP recipient. That backend accepts only protobuf with
+//     the configured authorisation and protocol headers.
+//  4. The regression above — an edge holding a token that is not in the
 //     gateway's allowlist drops the data AND says so. Both halves are asserted:
 //     the marker must be absent from the sink, and otelcol_exporter_send_failed_*
 //     on the edge's own metrics endpoint must be non-zero. The second half is
@@ -51,6 +55,8 @@
 //     rejected token does, so the assertion first handshakes with the gateway
 //     against the CA the edge was handed and refuses to conclude anything if
 //     the transport is at fault.
+//  5. A non-empty allowlist replacement activates the new token and revokes the
+//     previous one, including the final-client revocation operation.
 //
 // TestEdgePersistsAcceptedDataBeforeAcknowledgement: a record accepted while
 // the gateway is unavailable survives an edge SIGKILL and is delivered after
@@ -58,11 +64,14 @@
 // graceful shutdown would flush an in-memory processor batch and could let a
 // non-durable pipeline pass.
 //
-// TestBackendCouplingUnderQueuePressure: that two gateway backends are not
-// independent under `block_on_overflow: true`. A stopped backend with queue
-// headroom leaves ingest and the healthy backend untouched; once its queue is
+// TestGatewayPersistsSelectedTraceBeforeAcknowledgement applies the same
+// SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
+//
+// TestRequiredRecipientCouplingUnderQueuePressure: required gateway recipients are
+// not independent under `block_on_overflow: true`. A stopped recipient with queue
+// headroom leaves ingest and the healthy recipient untouched; once its queue is
 // full, synchronous fan-out backpressures ingest. A runbook in a consuming
-// repository claims the backends are always independent.
+// repository claims the recipients are always independent.
 //
 // # Usage
 //

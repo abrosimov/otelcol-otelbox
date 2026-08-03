@@ -64,6 +64,30 @@ type otlpString struct {
 	StringValue string `json:"stringValue"`
 }
 
+type tracesPayload struct {
+	ResourceSpans []resourceSpans `json:"resourceSpans"`
+}
+
+type resourceSpans struct {
+	Resource   resourceValue `json:"resource"`
+	ScopeSpans []scopeSpans  `json:"scopeSpans"`
+}
+
+type scopeSpans struct {
+	Scope scopeValue `json:"scope"`
+	Spans []span     `json:"spans"`
+}
+
+type span struct {
+	TraceID           string      `json:"traceId"`
+	SpanID            string      `json:"spanId"`
+	Name              string      `json:"name"`
+	Kind              int         `json:"kind"`
+	StartTimeUnixNano string      `json:"startTimeUnixNano"`
+	EndTimeUnixNano   string      `json:"endTimeUnixNano"`
+	Attributes        []attribute `json:"attributes"`
+}
+
 func logPayload(t *testing.T, marker, body string, extra ...attribute) []byte {
 	t.Helper()
 
@@ -90,6 +114,46 @@ func logPayload(t *testing.T, marker, body string, extra ...attribute) []byte {
 	})
 	if err != nil {
 		t.Fatalf("could not marshal the OTLP payload for marker %s: %v", marker, err)
+	}
+	return payload
+}
+
+func tracePayload(t *testing.T, marker string, selected bool) []byte {
+	t.Helper()
+
+	started := time.Now()
+	resourceAttributes := []attribute{
+		{Key: "service.name", Value: otlpString{"otelbox-integration-test"}},
+	}
+	if selected {
+		resourceAttributes = append(resourceAttributes, attribute{
+			Key:   "otelbox.telemetry.class",
+			Value: otlpString{"llm"},
+		})
+	}
+
+	payload, err := json.Marshal(tracesPayload{
+		ResourceSpans: []resourceSpans{{
+			Resource: resourceValue{Attributes: resourceAttributes},
+			ScopeSpans: []scopeSpans{{
+				Scope: scopeValue{Name: "otelbox.integration"},
+				Spans: []span{{
+					TraceID:           randomHex(t, 16),
+					SpanID:            randomHex(t, 8),
+					Name:              "otelbox integration trace",
+					Kind:              1,
+					StartTimeUnixNano: strconv.FormatInt(started.UnixNano(), 10),
+					EndTimeUnixNano:   strconv.FormatInt(started.Add(time.Millisecond).UnixNano(), 10),
+					Attributes: []attribute{{
+						Key:   markerKey,
+						Value: otlpString{marker},
+					}},
+				}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("could not marshal the OTLP trace payload for marker %s: %v", marker, err)
 	}
 	return payload
 }
@@ -126,7 +190,15 @@ var (
 // sends no authorization header, which is what the edge's loopback receiver
 // expects and what the gateway's 401 precondition needs.
 func postLogs(client *http.Client, port int, token string, payload []byte) (int, string, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/logs", port)
+	return postOTLPJSON(client, port, "logs", token, payload)
+}
+
+func postTraces(client *http.Client, port int, token string, payload []byte) (int, string, error) {
+	return postOTLPJSON(client, port, "traces", token, payload)
+}
+
+func postOTLPJSON(client *http.Client, port int, signal, token string, payload []byte) (int, string, error) {
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/%s", port, signal)
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, "", err
@@ -162,6 +234,22 @@ func sendOrFail(t *testing.T, description string, port int, payload []byte) bool
 		return false
 	case status != http.StatusOK:
 		t.Errorf("%s: the OTLP receiver on port %d refused the record (HTTP %d): %s",
+			description, port, status, body)
+		return false
+	}
+	return true
+}
+
+func sendTraceOrFail(t *testing.T, description string, port int, payload []byte) bool {
+	t.Helper()
+
+	status, body, err := postTraces(sendClient, port, "", payload)
+	switch {
+	case err != nil:
+		t.Errorf("%s: the OTLP receiver on port %d did not answer: %v", description, port, err)
+		return false
+	case status != http.StatusOK:
+		t.Errorf("%s: the OTLP receiver on port %d refused the trace (HTTP %d): %s",
 			description, port, status, body)
 		return false
 	}

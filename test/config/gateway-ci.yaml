@@ -1,22 +1,20 @@
 # otelbox — GATEWAY ROLE, CI OVERLAY. Loaded SECOND, only by test/harness
-# (TestEdgeToGatewayDelivery):
+# delivery and durability scenarios:
 #
 #   otelcol-otelbox --config config/gateway.yaml \
 #                   --config test/config/gateway-ci.yaml
 #
 # CI ONLY, never copied into a deployment. It moves the listeners into the 34xxx
-# block and swaps the backends for a sink the test can read — the real backends
-# do not exist in CI, and standing them up would test them rather than this
-# collector. Auth, redaction, limits and processor order are left alone: they
-# are what the assertions are about. A `file` sink cannot be stopped, hence the
-# separate gateway-coupling-ci.yaml.
+# block and swaps the ordinary gRPC recipient for a sink the test can read. The
+# selected-traces HTTP recipient remains attached so the harness can verify its
+# filter, protocol headers and WAL. Auth, redaction, limits and processor order
+# are left alone. A `file` sink cannot be stopped, hence the separate
+# gateway-coupling-ci.yaml.
 #
 # Environment, minus OTELBOX_BIND_HOST and OTELBOX_HEALTH_ENDPOINT, which this
-# layer replaces every reference to: OTELBOX_INGEST_TOKEN_FILE,
-# OTELBOX_STORAGE_DIR, OTELBOX_BACKEND_1_ENDPOINT and OTELBOX_BACKEND_2_ENDPOINT
-# (the last two unused here, but still expanded at load because a key cannot be
-# removed by a later layer), plus OTELBOX_CI_SINK, OTELBOX_CI_GATEWAY_CERT_FILE
-# and OTELBOX_CI_GATEWAY_KEY_FILE.
+# layer replaces every reference to: the role's required environment plus
+# OTELBOX_CI_SINK, OTELBOX_CI_GATEWAY_CERT_FILE and
+# OTELBOX_CI_GATEWAY_KEY_FILE.
 
 extensions:
   healthcheckv2:
@@ -78,13 +76,19 @@ service:
                 port: 34889
   pipelines:
     # Every pipeline is restated because lists replace rather than merge —
-    # naming only the exporters would leave the real backends attached.
+    # naming only the exporters would leave the reference recipient attached.
     # `processors` is restated identically on purpose: it is the line a reviewer
     # checks when asking whether the test still runs redaction.
     traces:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]
+    # Inherited unchanged: the selected-traces HTTP exporter and its persistent
+    # queue are part of the contract this overlay is used to prove.
+    traces/selected:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/secrets, filter/selected_traces]
+      exporters: [otlp_http/selected_traces]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]

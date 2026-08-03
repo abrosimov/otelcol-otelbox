@@ -24,8 +24,10 @@ const (
 	edgeHealthPort  = 34133
 	edgeMetricsPort = 34888
 
-	gatewayHTTPPort = 34328
-	gatewayGRPCPort = 34327
+	gatewayHTTPPort       = 34328
+	gatewayGRPCPort       = 34327
+	gatewayMetricsPort    = 34889
+	selectedTraceEndpoint = "127.0.0.1:34371"
 
 	// The coupling scenario runs its own gateway, on its own listeners, so a
 	// process left behind by the delivery test cannot silently serve it.

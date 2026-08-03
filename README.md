@@ -6,8 +6,8 @@ three self-contained role profiles:
 | Role | Ingests | Exports to |
 | --- | --- | --- |
 | `edge` | Local OTLP and the collector's own metrics | One authenticated gateway |
-| `gateway` | Authenticated OTLP and its own metrics | Two independently queued backends |
-| `host-agent` | Host metrics, Docker statistics, selected journal units and neighbouring Prometheus targets | One authenticated gateway |
+| `gateway` | Authenticated OTLP and its own metrics | N explicitly rendered required recipients, each with its own WAL |
+| `host-agent` | Host metrics, selected journal units and neighbouring Prometheus targets | One authenticated gateway |
 
 Version 2.0 removes the old base-plus-role configuration model. A process loads
 exactly one file:
@@ -25,6 +25,10 @@ builds and proves them. It does not own service units, launchd agents, Compose
 files, Ansible, secret stores or machine-local rendered configuration. Those
 belong to the consuming repositories.
 
+The binary links only components used by a role or the black-box backend
+double: 4 receivers, 4 processors, 3 exporters, 4 extensions and no connectors.
+Adding a dormant capability is a deliberate size and support-contract decision.
+
 The role profiles are demonstrations of a deployment contract, not production
 mirrors. Values that name a neighbour, bind address, credential file or storage
 location are supplied through `${env:...}` references.
@@ -36,7 +40,7 @@ location are supplied through `${env:...}` references.
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
 | `shared-config-check.sh` | Fails when any marked shared region differs byte for byte. |
-| `smoke-check.sh` | Compares manifest component counts with the built binary and asserts the `file_storage` and `redaction` invariants by name. |
+| `smoke-check.sh` | Compares manifest component counts with the built binary and asserts storage, redaction and selected-traces components by name. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
 | `test/config/` | CI-only overlays and backend doubles used by the harness. |
 | `Dockerfile` | Packages the already-built Linux binary in `scratch`; it never compiles. |
@@ -50,6 +54,13 @@ exporter uses a bounded `file_storage` sending queue and retries transient
 failures indefinitely. Edge and gateway queues block their OTLP callers when
 full so those callers can retry. The host agent cannot back-pressure scrapers;
 it retains an outage up to its WAL capacity and rejects new samples once full.
+
+Gateway recipient eligibility is part of required delivery. Ordinary signals
+fan out to every rendered all-signal gRPC recipient; the reference shows one
+such instance. Traces classified with
+`otelbox.telemetry.class=llm` additionally enter a generic OTLP/HTTP recipient.
+The consuming deployment owns its concrete endpoint, credentials and protocol
+headers.
 
 The binary deliberately does not link the `batch` processor. It acknowledges
 upstream before its in-memory batch reaches the exporter and logs, rather than
@@ -114,8 +125,11 @@ It proves:
 1. authenticated edge-to-gateway delivery and redaction;
 2. an unknown token is rejected and visible in edge exporter metrics;
 3. a record acknowledged while the gateway is down survives an edge SIGKILL;
-4. gateway backend fan-out leaves ingest unaffected only while every backend
-   queue has headroom; a full blocking queue backpressures the receiver.
+4. selected traces alone reach OTLP/HTTP with required auth/protocol headers and
+   survive a gateway SIGKILL in that recipient's WAL;
+5. gateway fan-out leaves ingest unaffected only while every required recipient
+   queue has headroom; a full blocking queue backpressures the receiver;
+6. non-empty allowlist replacement revokes the previous bearer token.
 
 ## Release flow
 

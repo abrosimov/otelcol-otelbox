@@ -1,102 +1,162 @@
 # Operating the gateway role
 
-The gateway authenticates OTLP clients, redacts accepted telemetry and fans
-each signal out to two backend exporters with separate WALs. Load
+The gateway authenticates one OTLP ingress, redacts accepted telemetry and
+persists each signal to every eligible required recipient. Load
 [the profile](../config/gateway.yaml) on its own:
 
 ```console
 otelcol-otelbox --config config/gateway.yaml
 ```
 
+## Recipient model
+
+Recipient count is configuration, not a binary limit. The reference profile
+demonstrates one all-signal gRPC recipient and one additional selected-traces
+HTTP recipient:
+
+| Data | Required recipients |
+| --- | --- |
+| Traces without a route classification | `otlp_grpc/all_signals` |
+| Traces with resource attribute `otelbox.telemetry.class=llm` | `otlp_grpc/all_signals` and `otlp_http/selected_traces` |
+| Metrics and logs, including gateway self-metrics | `otlp_grpc/all_signals` |
+
+To render another recipient, add its exporter, a unique `file_storage`
+extension, the extension ID under `service.extensions`, and the exporter ID to
+every pipeline for which it is required. Removing any one of those four pieces
+is a contract change, not a harmless refactor. Static Collector YAML cannot
+expand an environment variable into an arbitrary list, so the consuming
+repository renders the list explicitly.
+
+The selected-traces branch deliberately exposes only generic OTLP/HTTP,
+credential-file, arbitrary-header and filter capabilities. A consuming
+deployment maps those inputs to its concrete backend. For the current Langfuse
+4 deployment, `remote_server_setup` owns the `/api/public/otel` base endpoint,
+the complete Basic authorisation value and the
+`x-langfuse-ingestion-version: 4` header. This repository does not pin the
+vendor, image version or credential.
+
+The route marker only selects delivery. Producers and instrumentation own the
+backend's semantic span attributes and trace context; the gateway must not
+manufacture a vendor-specific observation schema from arbitrary traces.
+The pinned `filter` processor and `headers_setter` extension are Alpha; their
+configuration is intentionally narrow and the black-box routing/header harness
+is part of the release gate.
+
 ## Required environment
 
 | Variable | Meaning |
 | --- | --- |
-| `OTELBOX_BIND_HOST` | Address used by both OTLP listeners, self-metrics reader and self-scrape target. Choose loopback or wildcard from the actual network namespace. |
-| `OTELBOX_HEALTH_ENDPOINT` | Complete `host:port` for `healthcheckv2`. A container deployment commonly needs a reachable non-loopback address. |
-| `OTELBOX_INGEST_TOKEN_FILE` | Allowlist file for `bearertokenauth/ingest`. |
-| `OTELBOX_STORAGE_DIR` | Private writable root for both backend WALs and compaction files. |
-| `OTELBOX_BACKEND_1_ENDPOINT` | First backend OTLP/gRPC `host:port`. |
-| `OTELBOX_BACKEND_2_ENDPOINT` | Second backend OTLP/gRPC `host:port`. |
+| `OTELBOX_STORAGE_DIR` | Private writable root for all recipient WALs and compaction files. |
+| `OTELBOX_INGEST_TOKEN_FILE` | Static bearer allowlist for `bearertokenauth/ingest`. |
+| `OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT` | Reference all-signal OTLP/gRPC recipient `host:port`. |
+| `OTELBOX_SELECTED_TRACES_ENDPOINT` | OTLP/HTTP base URL; the exporter appends `/v1/traces`. |
+| `OTELBOX_SELECTED_TRACES_AUTH_HEADER_FILE` | Complete outbound authorisation value, including its scheme. |
+| `OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_NAME` | Additional protocol/header contract name. |
+| `OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE` | Additional protocol/header contract value. |
 
-Optional numeric variables carry defaults only when absent:
+Reference defaults apply only when a variable is absent:
 
 | Variable | Default | Scope |
 | --- | ---: | --- |
-| `OTELBOX_INGEST_MAX_CONCURRENT_STREAMS` | 16 | Per gRPC connection. Zero means unlimited and must not be used accidentally. |
-| `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 10 GiB | Per signal file, per backend. |
-| `OTELBOX_QUEUE_SIZE_BYTES` | 9 GiB | Per signal queue, per backend. Keep below the storage cap. |
-| `OTELBOX_BACKEND_MAX_PAYLOAD_BYTES` | 3 MiB | Sender batch split limit. Set from each backend's accepted request size. |
+| `OTELBOX_BIND_HOST` | `127.0.0.1` | OTLP listeners, self-metrics reader and target. A public or container ingress must opt into another address. |
+| `OTELBOX_HEALTH_ENDPOINT` | `127.0.0.1:14323` | Lifecycle health listener. |
+| `OTELBOX_INGEST_MAX_CONCURRENT_STREAMS` | 16 | Per gRPC connection, not a global client limit. |
+| `OTELBOX_MEMORY_LIMIT_PERCENTAGE` | 75 | Hard heap-pressure threshold relative to the cgroup limit. |
+| `OTELBOX_MEMORY_SPIKE_LIMIT_PERCENTAGE` | 15 | Spike allowance subtracted from the hard threshold. |
+| `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent workers per exporter and signal. |
+| `OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Per signal file, per recipient. |
+| `OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES` | 8 GiB | Per signal queue, per recipient. |
+| `OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES` | 3 MiB | Sender split limit, below the common 4 MiB downstream gRPC default. |
 
-There are three storage files per backend—traces, metrics and logs. At default
-caps the theoretical file allocation is 60 GiB before compaction headroom. Size
-the filesystem from that multiplication, not from one `max_size` value.
+The gateway profile assumes a cgroup memory limit. Set that limit in the
+deployment and set `GOMEMLIMIT` below it; otherwise a percentage of host memory
+is not a useful process ceiling. The Collector limiter observes Go heap, not RSS
+or memory-mapped WAL pages.
 
-## Endpoints
+## Capacity and payload envelopes
+
+Queue capacity is an outage budget, not a round number to copy blindly. For
+each recipient and signal, estimate:
+
+```text
+queue bytes >= peak encoded bytes/second * required outage seconds * safety factor
+storage max_size >= queue bytes * 1.5
+```
+
+A safety factor between 1.25 and 2 covers burstiness and estimation error. The
+reference 8 GiB queue and 12 GiB file cap preserve that 1.5 ratio. Gateway rates
+are aggregate across all edges and local agents; reusing an edge-sized budget
+without multiplying the measured ingress rate is incorrect.
+
+`max_size` applies to each bbolt signal file. The reference topology has four
+files: three for the all-signal recipient and one for selected traces. Its
+theoretical configured cap is therefore 48 GiB before filesystem and compaction
+headroom. A deployment with N all-signal recipients has `3N + 1` files while the
+selected-traces branch remains present. Size and alert from the rendered set.
+
+The default request ladder prevents a single accepted record from becoming
+unsendable after acknowledgement:
+
+```text
+edge ingress 1 MiB -> edge batch 1.5 MiB -> gateway ingress 2 MiB
+-> recipient batch 3 MiB -> downstream receiver at least 4 MiB
+```
+
+Compression does not increase receiver headroom: limits apply to the decoded
+message as well. A deployment that changes one rung must prove the entire
+ladder, especially the final receiver limit.
+
+## Authentication and transport
+
+The ingest allowlist contract is one URL-safe bare token per line, with no
+whitespace or comments. Give every client a distinct token. Although pinned
+v0.157 ignores text after the first whitespace, relying on that parser quirk
+makes file audits ambiguous.
+
+An empty-file reload is rejected and the previous tokens remain active. Rotate
+by replacing the file with a non-empty complete allowlist. To revoke the final
+client, replace it with a freshly generated non-client revocation token; do not
+truncate the file. The harness proves that replacement activates the new token
+and rejects the previous one.
+
+Inbound TLS termination belongs to the deployment. A bearer token must never
+cross an unencrypted network. All outbound exporters retain secure defaults;
+deliberate private plaintext must be stated in the rendered configuration.
+
+## Required delivery and coupling
+
+Every network exporter has its own persistent byte queue, infinite transient
+retry and `block_on_overflow: true`. An eligible record is acknowledged after it
+has been enqueued to every required pipeline. A recipient outage is isolated while
+its queue has headroom; after it fills, synchronous fan-out backpressures ingest.
+
+The selected HTTP recipient couples only classified trace requests. Ordinary
+traces, metrics and logs never enter its WAL. If one OTLP request contains both
+classified and unclassified trace resources, the request is one acknowledgement
+unit and can block on the selected recipient. The coupling and SIGKILL harness
+tests cover the queue-headroom, overflow and replay boundaries.
+
+## Endpoints and validation
 
 | Endpoint | Purpose |
 | --- | --- |
-| `${OTELBOX_BIND_HOST}:14319` | Authenticated OTLP/gRPC ingest, up to 32 MiB per message. |
-| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 32 MiB per request. |
-| `${OTELBOX_BIND_HOST}:8889/metrics` | Detailed Collector metrics and the self-scrape target. |
-| `${OTELBOX_HEALTH_ENDPOINT}/status` | Lifecycle health only; full queues and backend rejection do not make it unhealthy. |
-
-The unauthenticated configuration dump is disabled.
-
-## Ingest credentials and transport
-
-The allowlist contains one bare token per line. The first whitespace-delimited
-field is the token and the rest is an optional comment:
-
-```text
-edge-token-1  workstation edge
-host-token-1  server host agent
-```
-
-Clients send `Authorization: Bearer <token>`. Give each client its own token so
-one can be revoked independently.
-
-The role profile does not decide where inbound TLS terminates. If the Collector
-terminates it, the deployment must add certificate and key settings to both
-OTLP protocols. If a trusted ingress terminates it, bind the Collector only on
-that private path. A bearer token must never cross an unencrypted network. The
-edge exporter keeps certificate verification enabled, and the integration test
-configures gateway TLS directly.
-
-Backend exporters also use TLS verification by default and carry no credential:
-authentication terminates at this gateway in the demonstrated topology. A
-deployment that needs backend authentication or deliberate plaintext must add
-those settings to its rendered profile.
-
-## Queue behaviour and coupling
-
-Each backend has its own `file_storage` directory, byte-sized queue and infinite
-transient retry. Sender batching occurs after persistent enqueue. Full queues
-block rather than discard because OTLP clients can retry.
-
-Separate queues do not make fan-out fully independent. The Collector invokes
-fan-out consumers synchronously: a stopped backend leaves ingest and its
-neighbour alone while it has queue headroom, but once its queue fills and
-blocks, backpressure reaches the receiver. Depending on exporter order, the
-healthy exporter may accept the current record before the client request
-blocks; the next request still cannot proceed normally. The harness proves both
-sides of this boundary. Alert on queue utilisation early enough that overflow
-is an incident response trigger, not the first symptom operators see.
-
-## Validate and operate
+| `${OTELBOX_BIND_HOST}:14319` | Authenticated OTLP/gRPC ingest, up to 2 MiB per message. |
+| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 2 MiB per request. |
+| `${OTELBOX_BIND_HOST}:8889/metrics` | Detailed Collector metrics and self-scrape target. |
+| `${OTELBOX_HEALTH_ENDPOINT}/status` | Lifecycle health only; full queues and rejected exports do not make it unhealthy. |
 
 ```console
-printf 'validation-placeholder  gateway validation only\n' > /tmp/otelbox-ingest-tokens
-OTELBOX_BIND_HOST=0.0.0.0 \
-OTELBOX_HEALTH_ENDPOINT=0.0.0.0:14323 \
-OTELBOX_INGEST_TOKEN_FILE=/tmp/otelbox-ingest-tokens \
 OTELBOX_STORAGE_DIR=/tmp/otelbox-gateway \
-OTELBOX_BACKEND_1_ENDPOINT=127.0.0.1:14317 \
-OTELBOX_BACKEND_2_ENDPOINT=127.0.0.1:24317 \
+OTELBOX_INGEST_TOKEN_FILE=/tmp/otelbox-ingest-tokens \
+OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT=127.0.0.1:14317 \
+OTELBOX_SELECTED_TRACES_ENDPOINT=https://selected.example/otel \
+OTELBOX_SELECTED_TRACES_AUTH_HEADER_FILE=/tmp/selected-auth-header \
+OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_NAME=x-protocol-version \
+OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE=4 \
   otelcol-otelbox validate --config config/gateway.yaml
 ```
 
-Monitor exporter send/enqueue failures and queue size/capacity per exporter and
-signal. Probe unauthenticated ingest and require HTTP 401 as an access-control
-precondition; `/status` alone says nothing about either authentication or
+Monitor send/enqueue failures and queue size/capacity per exporter and signal.
+Require an unauthenticated OTLP/HTTP probe to return 401 and send far-end markers
+to every eligible recipient; `/status` proves neither access control nor
 delivery.

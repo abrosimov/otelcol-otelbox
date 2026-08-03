@@ -3,9 +3,9 @@
 #
 # Per-kind counts rather than names, because a component reports its type, not
 # its module path (resourcedetectionprocessor → resource_detection), and a
-# hand-maintained translation table would rot on every bump. file_storage and
-# redaction are additionally asserted by name — they are the invariants the
-# collector exists for.
+# hand-maintained translation table would rot on every bump. The named storage,
+# redaction and selected-traces components are additionally asserted because
+# counts cannot prove the required component classes.
 #
 # Usage: ./smoke-check.sh <binary> [builder.yaml]
 
@@ -67,7 +67,7 @@ for kind in ${KINDS}; do
     fi
 done
 
-for required in file_storage redaction; do
+for required in file_storage redaction filter headers_setter otlp_http; do
     if ! "${bin}" components | grep -q "name: ${required}$"; then
         echo "smoke-check: required component '${required}' missing from the binary" >&2
         failed=1

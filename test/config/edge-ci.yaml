@@ -1,5 +1,5 @@
-# otelbox — EDGE ROLE, CI OVERLAY. Loaded SECOND, only by test/harness
-# (TestEdgeToGatewayDelivery):
+# otelbox — EDGE ROLE, CI OVERLAY. Loaded SECOND, only by test/harness delivery
+# and durability scenarios:
 #
 #   otelcol-otelbox --config config/edge.yaml --config test/config/edge-ci.yaml
 #
