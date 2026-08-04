@@ -7,7 +7,7 @@ three self-contained role profiles:
 | --- | --- | --- |
 | `edge` | Local OTLP and the collector's own metrics | One authenticated gateway |
 | `gateway` | Authenticated OTLP and its own metrics | N explicitly rendered required recipients, each with its own WAL |
-| `host-agent` | Host metrics, selected journal units and neighbouring Prometheus targets | One authenticated gateway |
+| `host-agent` | Host metrics, selected journal units, neighbouring Prometheus targets and the collector's own metrics | One authenticated gateway |
 
 Version 2.0 removes the old base-plus-role configuration model. A process loads
 exactly one file:
@@ -40,7 +40,7 @@ location are supplied through `${env:...}` references.
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
 | `shared-config-check.sh` | Fails when any marked shared region differs byte for byte. |
-| `smoke-check.sh` | Compares manifest component counts with the built binary and asserts storage, redaction and selected-traces components by name. |
+| `smoke-check.sh` | Compares manifest component counts and every declared module with the built binary, then asserts every supported component name. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
 | `test/config/` | CI-only overlays and backend doubles used by the harness. |
 | `Dockerfile` | Packages the already-built Linux binary in `scratch`; it never compiles. |
@@ -49,11 +49,14 @@ location are supplied through `${env:...}` references.
 
 ## Safety and durability model
 
-All roles redact credential-shaped attributes before export. Every network
-exporter uses a bounded `file_storage` sending queue and retries transient
-failures indefinitely. Edge and gateway queues block their OTLP callers when
-full so those callers can retry. The host agent cannot back-pressure scrapers;
-it retains an outage up to its WAL capacity and rejects new samples once full.
+All roles apply the same bounded credential redaction before export. This is
+defence in depth rather than a general PII guarantee; the exact inspected
+carriers, blind spots and producer duties are in the
+[credential redaction boundary](docs/redaction.md). Every network exporter uses
+a bounded `file_storage` sending queue and retries transient failures
+indefinitely. Edge and gateway queues block their OTLP callers when full so
+those callers can retry. The host agent cannot back-pressure scrapers; it
+retains an outage up to its WAL capacity and rejects new samples once full.
 
 Gateway recipient eligibility is part of required delivery. Ordinary signals
 fan out to every rendered all-signal gRPC recipient; the reference shows one
@@ -78,13 +81,17 @@ integration test always verifies a per-run CA and leaf certificate.
 An unset `${env:NAME}` is not a named configuration error. The Collector warns,
 substitutes an empty value and the decoder may turn it into the target type's
 zero value. Every numeric reference in these profiles therefore carries a
-`:-default`. An exported but empty variable does not use that default.
+`:-default`. Storage references use an invalid `/dev/null/...-is-required`
+default so omission fails validation instead of silently selecting a root-level
+directory. An exported but empty variable bypasses either default and is
+forbidden in a rendered deployment.
 
 Required string and path variables are documented in the role guides:
 
 - [Edge](docs/edge.md)
 - [Gateway](docs/gateway.md)
 - [Host agent](docs/host-agent.md)
+- [Credential redaction boundary](docs/redaction.md)
 - [Adopting 2.0](docs/adoption.md)
 
 ## Build and verify locally
@@ -131,6 +138,10 @@ It proves:
    queue has headroom; a full blocking queue backpressures the receiver;
 6. non-empty allowlist replacement revokes the previous bearer token.
 
+The black-box harness starts the `edge` and `gateway` roles. It does not execute
+the Linux-only host-agent receivers; validate and smoke that role on the target
+host as described in its guide.
+
 ## Release flow
 
 `dist.version` in `builder.yaml` is the only artefact-version source. A push to
@@ -142,7 +153,9 @@ pushed tag triggers nothing.
 A release contains two binaries and checksums, the three-profile configuration
 archive, a single-image digest reference and the exact-version GHCR image. The
 formula job then updates the version, URLs and checksums on the default branch.
-Do not hand-edit those release literals.
+The workflow refuses orphan Git tags and existing exact-version image tags
+rather than reusing or overwriting them. Do not hand-edit the formula's release
+literals.
 
 The version describes the consumer contract: configuration-shape breaks are
 major, newly available capabilities are minor, and a rebuild over the same

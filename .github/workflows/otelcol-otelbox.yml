@@ -32,6 +32,8 @@ on:
       - .dockerignore
       - config/**
       - test/**
+      - Formula/**
+      - renovate.json5
       - .github/workflows/otelcol-otelbox.yml
   pull_request:
     paths:
@@ -42,6 +44,8 @@ on:
       - .dockerignore
       - config/**
       - test/**
+      - Formula/**
+      - renovate.json5
       - .github/workflows/otelcol-otelbox.yml
   workflow_dispatch: {}
 
@@ -76,9 +80,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          version="$(grep -E '^  version:' builder.yaml | head -1 | awk '{print $2}')"
-          if [ -z "$version" ]; then
-            echo "could not read dist.version from builder.yaml" >&2
+          version_lines="$(grep -E '^  version:' builder.yaml || true)"
+          if [ "$(printf '%s\n' "$version_lines" | awk 'NF { count++ } END { print count + 0 }')" -ne 1 ]; then
+            echo "builder.yaml must contain exactly one dist.version line" >&2
+            exit 1
+          fi
+          version="$(printf '%s\n' "$version_lines" | awk 'NF == 2 { print $2 }')"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "dist.version must be an unquoted stable semantic version, got '${version:-<unreadable>}'" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -86,10 +95,17 @@ jobs:
           # OCB must match the core modules it compiles, so the toolchain
           # version comes from the otlpreceiver pin and never from dist.version,
           # which describes this artefact alone.
-          upstream_pin="$(grep -E 'collector/receiver/otlpreceiver v' builder.yaml \
-            | head -1 | awk '{print $NF}')"
-          if [ -z "$upstream_pin" ]; then
-            echo "could not read the otlpreceiver gomod pin from builder.yaml" >&2
+          upstream_pins="$(awk '
+            $1 == "-" && $2 == "gomod:" &&
+            $3 == "go.opentelemetry.io/collector/receiver/otlpreceiver" { print $4 }
+          ' builder.yaml)"
+          if [ "$(printf '%s\n' "$upstream_pins" | awk 'NF { count++ } END { print count + 0 }')" -ne 1 ]; then
+            echo "builder.yaml must contain exactly one otlpreceiver gomod pin" >&2
+            exit 1
+          fi
+          upstream_pin="$upstream_pins"
+          if ! [[ "$upstream_pin" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "otlpreceiver pin must be a stable semantic version prefixed with v, got '$upstream_pin'" >&2
             exit 1
           fi
           upstream_version="${upstream_pin#v}"
@@ -98,8 +114,9 @@ jobs:
           # An upstream bump rewrites every pin by hand, and a line left behind
           # compiles perfectly into a collector assembled from two releases that
           # nothing downstream would notice.
-          disagreeing="$(grep -nE '^[[:space:]]*-[[:space:]]*gomod:' builder.yaml \
-            | grep -vE "[[:space:]]${upstream_pin}[[:space:]]*\$" || true)"
+          disagreeing="$(awk -v pin="$upstream_pin" '
+            $1 == "-" && $2 == "gomod:" && $4 != pin { print NR ":" $0 }
+          ' builder.yaml)"
           if [ -n "$disagreeing" ]; then
             echo "builder.yaml mixes upstream versions — these pins are not at ${upstream_pin}," >&2
             echo "which is what otlpreceiver says and what OCB will be installed at:" >&2
@@ -115,12 +132,52 @@ jobs:
           image="ghcr.io/${owner}/otelcol-otelbox"
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
-          if gh release view "v$version" >/dev/null 2>&1; then
+          if release_probe="$(gh api --silent --include \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/v${version}" 2>&1)"; then
+            release_http_status="$(printf '%s\n' "$release_probe" \
+              | awk '/^HTTP\// { status = $2 } END { print status }')"
+            if [ "$release_http_status" != "200" ]; then
+              echo "release lookup succeeded with unexpected HTTP status ${release_http_status:-<missing>}" >&2
+              exit 1
+            fi
             release_exists=true
           else
-            release_exists=false
+            release_http_status="$(printf '%s\n' "$release_probe" \
+              | awk '/^HTTP\// { status = $2 } END { print status }')"
+            if [ "$release_http_status" = "404" ]; then
+              release_exists=false
+            else
+              echo "could not determine whether release v$version exists:" >&2
+              printf '%s\n' "$release_probe" >&2
+              exit 1
+            fi
           fi
           echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+
+          # A tag without a release is not a new version. Reusing it would make
+          # --target ineffective and could publish artefacts against a commit
+          # other than the one this run tested.
+          if [ "$release_exists" = "false" ]; then
+            if tag_probe="$(gh api --silent --include \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" 2>&1)"; then
+              tag_http_status="$(printf '%s\n' "$tag_probe" \
+                | awk '/^HTTP\// { status = $2 } END { print status }')"
+              if [ "$tag_http_status" = "200" ]; then
+                echo "tag v$version exists without a release — refusing to reuse it" >&2
+              else
+                echo "tag lookup succeeded with unexpected HTTP status ${tag_http_status:-<missing>}" >&2
+              fi
+              exit 1
+            else
+              tag_http_status="$(printf '%s\n' "$tag_probe" \
+                | awk '/^HTTP\// { status = $2 } END { print status }')"
+              if [ "$tag_http_status" != "404" ]; then
+                echo "could not determine whether tag v$version exists:" >&2
+                printf '%s\n' "$tag_probe" >&2
+                exit 1
+              fi
+            fi
+          fi
 
           # Publishing is the only thing gated: the config layer and the harness
           # must be built and exercised even at an already-released version.
@@ -144,6 +201,63 @@ jobs:
             echo "- image: \`$image:$version\`"
             echo "- publish: \`$publish\` — $reason"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  static-check:
+    name: Static contract checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.12"
+          cache: false
+
+      - name: Set up Node.js for the Renovate validator
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.11.0"
+
+      - name: Check shell and workflow sources
+        run: |
+          shellcheck smoke-check.sh shared-config-check.sh
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/otelcol-otelbox.yml
+
+      - name: Check the harness
+        working-directory: test/harness
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Go files need gofmt:" >&2
+            printf '%s\n' "$unformatted" >&2
+            exit 1
+          fi
+          go vet ./...
+
+      - name: Check Docker, Formula, Renovate and YAML sources
+        env:
+          HADOLINT_SHA256: 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47
+        run: |
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/hadolint" \
+            https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64
+          printf '%s  %s\n' "$HADOLINT_SHA256" "$RUNNER_TEMP/hadolint" | sha256sum --check --strict -
+          chmod +x "$RUNNER_TEMP/hadolint"
+          "$RUNNER_TEMP/hadolint" Dockerfile
+          ruby -c Formula/otelcol-otelbox.rb
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load(File.read(path), aliases: false) }' \
+            builder.yaml config/*.yaml test/config/*.yaml
+          npm_config_cache="$RUNNER_TEMP/npm-cache" npx --yes --package=renovate@44.9.1 \
+            renovate-config-validator --strict --no-global renovate.json5
+          git diff --check
+
+      - name: Check shared profile regions
+        run: ./shared-config-check.sh
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -206,6 +320,16 @@ jobs:
         # A dropped component fails the build rather than shipping a silently
         # thin binary.
         run: ./smoke-check.sh "./$ASSET" builder.yaml
+
+      - name: Check reachable Go vulnerabilities
+        if: matrix.goos == 'linux'
+        # Source mode uses the generated collector's call graph. Binary mode
+        # reports dormant OpenPGP and S3 crypto symbols pulled in by upstream
+        # modules as reachable even though this collector does not call them.
+        working-directory: _build
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Checksum
         # sha256sum on Linux, shasum on macOS. Bare hex only, no filename
@@ -407,14 +531,14 @@ jobs:
 
   image:
     name: Container image (GHCR)
-    needs: [resolve, build, validate-config, integration-test]
+    needs: [resolve, static-check, build, validate-config, integration-test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       packages: write
     outputs:
-      digest: ${{ steps.build_push.outputs.digest }}
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -444,16 +568,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and publish the image
-        id: build_push
-        # Built on every run so a broken Dockerfile is caught by the pull
-        # request that broke it; pushed only when the release is going out.
+      - name: Refuse to overwrite an existing versioned image
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          IMAGE_REF: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+        run: |
+          if existing="$(docker buildx imagetools inspect "$IMAGE_REF" 2>&1)"; then
+            echo "$IMAGE_REF already exists — refusing to overwrite an immutable version tag" >&2
+            exit 1
+          fi
+          if [[ "$existing" != *"not found"* && "$existing" != *"manifest unknown"* ]]; then
+            echo "could not determine whether $IMAGE_REF exists:" >&2
+            printf '%s\n' "$existing" >&2
+            exit 1
+          fi
+
+      - name: Build the image
+        id: build
+        # Load the single-platform image into the runner so the exact manifest
+        # can be scanned before any registry write is possible.
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: ${{ needs.resolve.outputs.publish == 'true' }}
+          load: true
+          push: false
           # A provenance attestation turns a single-platform push into a
           # manifest index, and the published digest would then name the index
           # rather than the bytes the deployment pins.
@@ -470,9 +610,44 @@ jobs:
             REVISION=${{ github.sha }}
             CREATED=${{ steps.stamp.outputs.created }}
 
+      - name: Scan the image for fixable high-impact vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+          version: v0.70.0
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          ignore-unfixed: true
+          exit-code: "1"
+          cache: false
+
+      - name: Smoke-test the packaged binary
+        env:
+          IMAGE_REF: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          docker run --rm --network none --read-only "$IMAGE_REF" components \
+            > "$RUNNER_TEMP/image-components.yaml"
+          grep -Fq "    version: $VERSION" "$RUNNER_TEMP/image-components.yaml"
+          grep -Fq "    - name: otlp_grpc" "$RUNNER_TEMP/image-components.yaml"
+
+      - name: Publish the scanned image
+        id: publish
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          IMAGE_REF: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+        run: |
+          docker push "$IMAGE_REF"
+          digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE_REF")"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "registry returned an invalid image digest: ${digest:-<empty>}" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
   release:
     name: Publish release
-    needs: [resolve, build, validate-config, integration-test, image, config-bundle]
+    needs: [resolve, static-check, build, validate-config, integration-test, image, config-bundle]
     if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -509,6 +684,21 @@ jobs:
           fi
           printf '%s@%s\n' "$IMAGE" "$DIGEST" > dist/image-digest.txt
           cat dist/image-digest.txt
+
+      - name: Verify the downloaded binary checksums
+        run: |
+          for asset in otelcol-otelbox_darwin_arm64 otelcol-otelbox_linux_amd64; do
+            checksum="$(cat "dist/${asset}.sha256")"
+            if ! [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || [ "$(wc -l < "dist/${asset}.sha256")" -ne 1 ]; then
+              echo "dist/${asset}.sha256 is not one bare lowercase SHA-256 digest" >&2
+              exit 1
+            fi
+            actual="$(sha256sum "dist/$asset" | awk '{ print $1 }')"
+            if [ "$actual" != "$checksum" ]; then
+              echo "checksum mismatch for dist/$asset" >&2
+              exit 1
+            fi
+          done
 
       - name: Compose the release notes
         # The upstream version is stated in prose because the release number is
@@ -582,10 +772,11 @@ jobs:
             natively on each target;
           - the edge, gateway and host-agent profiles each load on their own,
             and their shared blocks are byte-identical across all three;
-          - a real edge → authenticated gateway → sink run delivered telemetry,
-            stripped every credential-shaped value, and made a wrong ingestion
-            token fail loudly in the edge's own metrics rather than drop
-            telemetry in silence;
+          - independent edge and gateway runs stripped the configured credential
+            corpus from logs, traces and metrics without changing representative
+            ordinary values; the selected-traces path was included;
+          - a wrong ingestion token failed loudly in the edge's own metrics
+            rather than dropping telemetry in silence;
           - a record acknowledged by the edge while the gateway was unavailable
             survived a forced edge process termination and was delivered after
             both processes returned;
@@ -603,16 +794,14 @@ jobs:
 
       - name: Publish release
         # --target pins the tag to the commit that was tested, not to wherever
-        # the branch has moved since. The upload fallback covers two runs
-        # reaching this step for the same new version.
+        # the branch has moved since. An existing tag or release is immutable.
         run: |
           tag="v${VERSION}"
           gh release create "$tag" \
             --title "$tag" \
             --target "$GITHUB_SHA" \
             --notes-file notes.md \
-            dist/* \
-          || gh release upload "$tag" dist/* --clobber
+            dist/*
 
   formula:
     name: Refresh the Homebrew formula
@@ -725,8 +914,8 @@ jobs:
           fi
 
       - name: Commit and push the refreshed formula
-        # Nothing re-triggers this workflow: GITHUB_TOKEN pushes do not start
-        # runs, and Formula/** is absent from the path filters anyway.
+        # GITHUB_TOKEN pushes do not start another workflow run, so the bot
+        # commit cannot recurse even though Formula/** is in the path filters.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

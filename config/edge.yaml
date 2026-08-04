@@ -73,7 +73,7 @@ extensions:
   # client after the signal, so this directory holds a traces, a metrics and a
   # logs file, each capped separately. Budget accordingly.
   file_storage/gateway:
-    directory: ${env:OTELBOX_STORAGE_DIR}/gateway
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/gateway
     create_directory: true
     fsync: true
     # A disk budget is a property of a machine, which this profile cannot know.
@@ -94,7 +94,7 @@ extensions:
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/gateway
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/gateway
       # Removes a temp copy left behind by a kill mid-compaction, which would
       # otherwise stay for ever.
       cleanup_on_start: true
@@ -146,20 +146,34 @@ processors:
     spike_limit_mib: ${env:OTELBOX_MEMORY_SPIKE_LIMIT_MIB:-80}
 
   # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
-  # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
-  # drop every attribute nobody enumerated, leaving healthy-looking empty
-  # telemetry. Add patterns in all three profiles or in none.
+  # A bounded credential deny-list, not a general PII scrubber. It scans
+  # attribute keys and string values plus scalar and structured log bodies; it
+  # cannot inspect every OTLP string carrier. docs/redaction.md owns the exact
+  # coverage boundary and producer obligations. Add patterns in every profile.
   redaction/secrets:
     allow_all_keys: true
+    # Preserve non-string attribute types. Nested map/slice attributes are a
+    # documented producer-side boundary because scanning them would stringify
+    # the whole value whenever one nested match fired.
+    redact_all_types: false
+    # Counts, never key names. This is record-level evidence that the control
+    # fired, not a replacement for a far-end leak probe.
+    summary: info
     blocked_key_patterns:
-      - '(?i).*authorization.*'
-      - '(?i).*api[._-]?key.*'
-      - '(?i).*cookie.*'
-      - '(?i)(^|.*[._-])(access|refresh|auth|secret|bearer)[._-]?token($|[._-].*)'
-      - '(?i).*password.*'
+      - '(?i)(^|.*[._-])(auth|authorization|cookie|token|secret|credential|password|passwd|pwd|passphrase|signature|dsn)($|[._-].*)'
+      - '(?i)(^|.*[._-])(api[._-]?key|private[._-]?key|connection[._-]?string)($|[._-].*)'
     blocked_values:
-      - '(?i)Bearer\s+\S+'
-      - '(?i)(sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}'
+      - '(?i)\b(Bearer|Basic)\s+\S+'
+      - '(?i)^(sk|rk|pk)[-_][A-Za-z0-9_-]{16,}$'
+      - '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'
+      - '\b(AKIA|ASIA)[A-Z0-9]{16}\b'
+      - '\bgh[pousr]_[A-Za-z0-9]{20,}\b'
+      - '\bgithub_pat_[A-Za-z0-9_]{20,}\b'
+      - '\bxox[baprs]-[A-Za-z0-9-]{10,}\b'
+      - '\bAIza[0-9A-Za-z_-]{20,}\b'
+      - '(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@'
+      - '(?i)"?(api[._-]?key|client[._-]?secret|password|passwd|pwd|passphrase|token)"?\s*[:=]\s*"?[^",\s;&}]+"?'
+      - '(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----'
 
   # <<< SHARED
 
@@ -193,6 +207,8 @@ exporters:
       # Unset would be zero, which `Validate` rejects outright — the one numeric
       # reference here that fails loudly. The default keeps it consistent with
       # the rest anyway.
+      # A deployment override must remain larger than the largest accepted OTLP
+      # request; an oversized item cannot fit a blocking persistent queue.
       queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}
       # Backpressure rather than silent loss: this role's producers are OTLP
       # clients that hold their own data and retry.

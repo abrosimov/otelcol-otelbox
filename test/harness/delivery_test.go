@@ -17,6 +17,15 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 	validToken := "otelbox-ci-valid-" + randomHex(t, 16)
 	wrongToken := "otelbox-ci-wrong-" + randomHex(t, 16)
 	secret := "otelboxsecret" + randomHex(t, 16)
+	credentialCases, secretValues := credentialCorpus(secret)
+	benignValues := []string{
+		"task-queue-processor-1",
+		"disk_read_bytes_total",
+		"risk_engine_v2_scoring",
+		"network_interface_eth0",
+		"bookmark_service_latency",
+		"api_gateway_handler_v3",
+	}
 	happyMarker := "otelbox-ci-happy-" + randomHex(t, 8)
 	redactionMarker := "otelbox-ci-redaction-" + randomHex(t, 8)
 	unauthorisedMarker := "otelbox-ci-unauthorised-" + randomHex(t, 8)
@@ -47,11 +56,14 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		configs: []string{
 			configPath("config", "gateway.yaml"),
 			configPath("test", "config", "gateway-ci.yaml"),
+			configPath("test", "config", "gateway-no-redaction-ci.yaml"),
 		},
 	})
 
 	var edges []*collector
-	startEdge := func(name, token string) *collector {
+	startEdge := func(t *testing.T, name, token string) *collector {
+		t.Helper()
+
 		edge := startCollector(t, collectorSpec{
 			name:     name,
 			stateDir: state,
@@ -112,7 +124,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}
 	})
 
-	edge := startEdge("edge-valid-token", validToken)
+	edge := startEdge(t, "edge-valid-token", validToken)
 	if err := poll(readyTimeout, edge, "the edge's health endpoint", edgeHealthy); err != nil {
 		t.Fatalf("the edge never became healthy: %v", err)
 	}
@@ -130,9 +142,15 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}
 	})
 
-	t.Run("assertion 2: credential-shaped attribute values are stripped before the sink", func(t *testing.T) {
-		payload := logPayload(t, redactionMarker, "otelbox integration test record",
-			credentialAttributes(secret)...)
+	t.Run("assertion 2: credentials are stripped without changing ordinary telemetry", func(t *testing.T) {
+		attributes := append([]attribute{}, credentialCases...)
+		for i, value := range benignValues {
+			attributes = append(attributes, attribute{
+				Key:   fmt.Sprintf("otelbox.test.benign.%d", i),
+				Value: otlpString{value},
+			})
+		}
+		payload := logPayload(t, redactionMarker, "login failed: password="+secret, attributes...)
 		if !sendOrFail(t, "assertion 2", edgeHTTPPort, payload) {
 			return
 		}
@@ -145,9 +163,34 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		// Deliberately the whole file, not the matching record. Redaction that
 		// leaked the value into a summary attribute, a resource attribute or a
 		// neighbouring batch would still be a leak.
-		if sinkContains(t, sink, secret) {
-			t.Fatalf("the secret value reached %s — redaction/secrets did not strip it. The record arrived (%s), so the pipeline ran; the pattern list the role profiles carry is what failed",
-				sink, redactionMarker)
+		for _, value := range secretValues {
+			if sinkContains(t, sink, value) {
+				t.Errorf("credential value %q reached %s even though marker %s arrived", value, sink, redactionMarker)
+			}
+		}
+		for _, value := range benignValues {
+			if !sinkContains(t, sink, value) {
+				t.Errorf("ordinary telemetry value %q was changed before reaching %s", value, sink)
+			}
+		}
+		if !sinkContains(t, sink, "redaction.masked.count") {
+			t.Error("the delivered record has no redaction.masked.count evidence")
+		}
+
+		metricMarker := "otelbox-ci-redaction-metric-" + randomHex(t, 8)
+		if !sendMetricOrFail(t, "metric redaction", edgeHTTPPort,
+			metricPayload(t, metricMarker, credentialCases...)) {
+			return
+		}
+		if err := poll(deliveryTimeout, edge, "metric marker "+metricMarker+" to reach the sink", func() bool {
+			return sinkContains(t, sink, metricMarker)
+		}); err != nil {
+			t.Fatalf("metric marker %s never reached the sink: %v", metricMarker, err)
+		}
+		for _, value := range secretValues {
+			if sinkContains(t, sink, value) {
+				t.Errorf("credential value %q survived the edge metrics pipeline", value)
+			}
 		}
 	})
 
@@ -160,7 +203,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			return
 		}
 		if !sendTraceOrFail(t, "selected trace routing", edgeHTTPPort,
-			tracePayload(t, selectedMarker, true)) {
+			tracePayload(t, selectedMarker, true, credentialCases...)) {
 			return
 		}
 
@@ -185,12 +228,23 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("the traces-only route leaked an unclassified trace: %v; %s", err, selectedBackend.diagnostics())
 		}
+		for _, value := range secretValues {
+			if sinkContains(t, sink, value) {
+				t.Errorf("credential value %q survived the edge trace pipeline to the ordinary recipient", value)
+			}
+			if selectedBackend.contains(value) {
+				t.Errorf("credential value %q survived the edge selected-trace pipeline", value)
+			}
+		}
+		if !selectedBackend.contains("redaction.masked.count") {
+			t.Error("the selected trace has no redaction.masked.count evidence")
+		}
 	})
 
 	t.Run("assertion 4: an edge with a token outside the gateway's allowlist drops data, visibly", func(t *testing.T) {
 		edge.stop(t)
 
-		wrongTokenEdge := startEdge("edge-wrong-token", wrongToken)
+		wrongTokenEdge := startEdge(t, "edge-wrong-token", wrongToken)
 		if err := poll(readyTimeout, wrongTokenEdge, "the edge's health endpoint", edgeHealthy); err != nil {
 			t.Fatalf("the edge never became healthy on the second run: %v", err)
 		}

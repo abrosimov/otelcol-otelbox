@@ -32,6 +32,12 @@ reserve both signal files, compaction headroom and the independent journald
 cursor. Render production queue capacity from measured peak rate and required
 outage duration.
 
+If `OTELBOX_STORAGE_DIR` is absent, its invalid `/dev/null/...-is-required`
+sentinel makes validation fail. An exported empty value bypasses that sentinel
+and is forbidden. The journald storage has no byte cap deliberately: it holds
+one small cursor rather than a telemetry backlog; the storage budget variable
+applies to each outbound signal WAL only.
+
 ## Local visibility and privileges
 
 Container statistics are deliberately absent from the first rootless Podman
@@ -95,8 +101,9 @@ OTELBOX_JOURNAL_UNIT_2=cron.service \
   otelcol-otelbox validate --config config/host-agent.yaml
 ```
 
-`validate` does not start `resource_detection`, `host_metrics` or
-`journalctl`. A runtime smoke test must be performed on the intended host with
-the intended service account. Command sandboxes that deny the boot-time sysctl
-make `resource_detection/system` fail at startup even when the configuration is
-valid.
+Run even `validate` for this profile on Linux: component construction rejects
+the journald receiver on other operating systems, although it does not execute
+`journalctl`. A runtime smoke test must then be performed on the intended host
+with the intended service account. Command sandboxes that deny the boot-time
+sysctl make `resource_detection/system` fail at startup even when the
+configuration is valid.

@@ -26,10 +26,13 @@ Reference variables have safe absent-variable defaults:
 | `OTELBOX_MEMORY_SPIKE_LIMIT_MIB` | 80 MiB | Spike allowance below the hard threshold. |
 | `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent outbound workers. |
 | `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 6 GiB | Per signal file; 1.5 times the queue capacity. |
-| `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Must fit within storage capacity. |
+| `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Must exceed the 1 MiB accepted-request envelope and fit within storage capacity. |
 
-An exported empty value does not select the default. Render explicit values in
-production rather than relying on these reference sizes.
+If `OTELBOX_STORAGE_DIR` is absent, its invalid `/dev/null/...-is-required`
+sentinel makes validation fail before a root-level WAL can be selected. An
+exported empty value bypasses that sentinel and every numeric default. Reject
+empty values and render explicit values in production rather than relying on
+the reference sizes.
 
 ## Endpoints
 

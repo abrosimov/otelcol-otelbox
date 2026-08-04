@@ -1,12 +1,12 @@
-# syntax=docker/dockerfile:1
-# Pinned frontend: the COPY --chmod flags below are a BuildKit feature.
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# The COPY --chmod flags below are a BuildKit feature.
 
 # Packaging only, never compilation: the binary comes from CI's OCB build, so
 # the image ships byte-for-byte what the release asset ships.
 
 # Alpine's base layer carries the Mozilla trust store, so the bundle is lifted
 # out without installing a package. Pinned so a rebuild cannot swap it silently.
-FROM alpine:3.24.1 AS certs
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS certs
 
 # scratch: the collector is statically linked (CGO_ENABLED=0) and every writable
 # path comes from the supervisor, so a shell or libc could only add exposure.

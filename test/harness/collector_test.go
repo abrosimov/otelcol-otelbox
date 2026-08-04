@@ -1,10 +1,12 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -45,14 +47,7 @@ func startCollector(t *testing.T, spec collectorSpec) *collector {
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	// The supervisor's environment plus this role's, exactly as launchd and
-	// Docker Compose supply it. Every reference the merged map still holds
-	// without a `:-` default has to be here: an unset one expands to the zero
-	// value, which surfaces as a component fault rather than a named variable.
-	cmd.Env = os.Environ()
-	for key, value := range spec.env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = collectorEnvironment(t, spec.env)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -70,6 +65,29 @@ func startCollector(t *testing.T, spec collectorSpec) *collector {
 	return c
 }
 
+func collectorEnvironment(t *testing.T, overrides map[string]string) []string {
+	t.Helper()
+
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	stripped := make([]string, 0)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "OTELBOX_") {
+			stripped = append(stripped, key)
+			continue
+		}
+		env = append(env, entry)
+	}
+	for key, value := range overrides {
+		env = append(env, key+"="+value)
+	}
+	if len(stripped) > 0 {
+		sort.Strings(stripped)
+		t.Logf("stripped ambient collector settings: %s", strings.Join(stripped, ", "))
+	}
+	return env
+}
+
 // SIGTERM first so the collector shuts its pipelines down and flushes; SIGKILL
 // only if it will not go.
 func (c *collector) stop(t *testing.T) {
@@ -81,9 +99,11 @@ func (c *collector) stop(t *testing.T) {
 		if c.alive() {
 			_ = c.cmd.Process.Signal(syscall.SIGTERM)
 		}
+		timer := time.NewTimer(stopTimeout)
+		defer timer.Stop()
 		select {
 		case <-c.exited:
-		case <-time.After(stopTimeout):
+		case <-timer.C:
 			t.Logf("%s did not stop on SIGTERM, sending SIGKILL", c.name)
 			_ = c.cmd.Process.Kill()
 			<-c.exited
@@ -100,7 +120,7 @@ func (c *collector) crash(t *testing.T) {
 		defer c.log.Close()
 
 		if c.alive() {
-			if err := c.cmd.Process.Kill(); err != nil {
+			if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				t.Fatalf("could not kill the %s collector: %v", c.name, err)
 			}
 		}

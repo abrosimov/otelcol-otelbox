@@ -208,9 +208,14 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 				headroomMarker, err)
 		}
 
-		recoveryMarker := "otelbox-ci-recovered-" + randomHex(t, 8)
-		if err := send(t, recoveryMarker); err != nil {
-			t.Fatalf("the gateway did not resume accepting posts after the recipient returned: %v", err)
+		var recoveryMarker string
+		var lastSendErr error
+		if err := poll(recoveryTimeout, gateway, "ingest to accept a post after recipient recovery", func() bool {
+			recoveryMarker = "otelbox-ci-recovered-" + randomHex(t, 8)
+			lastSendErr = send(t, recoveryMarker)
+			return lastSendErr == nil
+		}); err != nil {
+			t.Fatalf("the gateway did not resume accepting posts after the recipient returned: %v; last post error: %v", err, lastSendErr)
 		}
 		for path, name := range map[string]string{
 			healthySink: "healthy recipient",

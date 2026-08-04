@@ -35,7 +35,7 @@ stdlib-only Go module that drives the built binary from outside.
 | `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `shared-config-check.sh` | Byte-compares every marked shared region. |
-| `smoke-check.sh` | Checks component counts and the named storage/redaction invariants against a built binary. |
+| `smoke-check.sh` | Checks component counts, all declared modules and all supported component names against a built binary. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
@@ -81,6 +81,11 @@ zero is deliberately safe and documented. Defaults apply only when a variable
 is absent, not when it is exported empty. Whole-value references retain the
 YAML-parsed type; embedded references such as `${env:OTELBOX_BIND_HOST}:4317`
 are strings.
+
+`OTELBOX_STORAGE_DIR` uses `/dev/null/OTELBOX_STORAGE_DIR-is-required` as an
+invalid absent-value sentinel, so validation fails instead of accepting a WAL
+under `/`. A consuming deployment must also reject exported-empty required
+strings before starting the collector because an empty value bypasses defaults.
 
 If a required string reference is added, supply a non-secret dummy in the
 workflow's validation invocation. Expansion traverses the merged map even when
@@ -136,6 +141,28 @@ edge-to-gateway leg; backend doubles explicitly opt into plaintext.
 Changing either authenticator, file format, header, receiver `auth:` block or
 TLS overlay requires the full harness. A process and `/status` can remain green
 while every export is rejected.
+
+## Redaction boundary
+
+`redaction/secrets` is a bounded credential deny-list, not a general PII or
+arbitrary-payload guarantee. It covers resource, scope and record/datapoint
+attributes; span and event attributes; scalar log bodies by value; and
+structured log bodies recursively. It does not inspect span/event names, span
+links, metric identity fields, exemplars or nested map/slice attribute values.
+`redact_all_types` stays false because a nested match would coerce the complete
+structured attribute to a string.
+
+The canonical carrier and threat boundary is `docs/redaction.md`. Producers
+must source-sanitise unstructured text and must not place secrets in uncovered
+carriers. `summary: info` supplies record-local masked counts, never key names;
+it is evidence that a rule fired, not proof that no secret escaped. The harness
+attributes edge and gateway redaction independently across logs, traces and
+metrics, but host-agent collection remains a deployment-side Linux smoke.
+
+Changing key/value patterns, summary behaviour or processor placement requires
+the shared check and full harness. Every new value pattern needs a positive leak
+case and benign preservation cases; do not widen it with ordinary fragments
+such as `api`.
 
 ## Role-specific facts
 
@@ -202,10 +229,11 @@ pin that disagrees. Go is pinned to 1.25.12 because 1.25.0 mislinks this
 generated collector.
 
 Never create a release tag manually. A default-branch workflow run publishes
-`v<dist.version>` only when that release does not exist. Build and test jobs are
-always ungated; image, release and formula publication are additionally gated
-on a new version, default branch and non-PR event. To rebuild a version, remove
-the existing release deliberately before dispatching the workflow.
+`v<dist.version>` only when neither that release nor an orphan tag exists. Build
+and test jobs are always ungated; image, release and formula publication are
+additionally gated on a new version, default branch and non-PR event. Versioned
+release assets and GHCR tags are immutable. To rebuild a version, deliberately
+remove its release/tag and exact-version image before dispatching the workflow.
 
 Published assets are two native binaries with bare-hex checksum files, an
 archive containing exactly the three role profiles, `image-digest.txt`, and one
@@ -230,11 +258,13 @@ go test -C test/harness . -count=1 -timeout 15m -v \
   -args -otelcol-binary "$PWD/_build/otelcol-otelbox"
 ```
 
-Supply every required role environment value for `validate`. It decodes but
-does not start components. The full harness proves delivery, redaction,
+Supply every required role environment value for `validate`. Run host-agent
+validation on Linux because the journald receiver rejects other operating
+systems during component construction. Validation does not start receivers or
+exporters. The full harness proves edge/gateway delivery, redaction,
 authentication failure visibility, selected-trace routing and headers,
 persistence across SIGKILL, token replacement and recipient coupling under
-pressure.
+pressure; it does not exercise host-agent collection.
 
 `resource_detection`'s system detector and every `host_metrics` scraper read
 boot time during startup. A command sandbox may deny that read and report

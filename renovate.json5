@@ -106,12 +106,21 @@
       // copied into a `scratch` image, and the gateway verifies every backend
       // it dials, so a stale bundle decides which backends are reachable.
       //
-      // Digest pinning is deliberately left off (`pinDigests` default false):
-      // a digest would hide which Alpine release the trust store came from, and
-      // the explicit patch tag already prevents a silent swap.
+      // Keep the patch tag for human provenance and pin its index digest so a
+      // rebuild cannot silently substitute different certificate bytes.
       matchManagers: ['dockerfile'],
       matchPackageNames: ['alpine'],
+      pinDigests: true,
       addLabels: ['trust-store'],
+    },
+
+    {
+      // The Dockerfile frontend executes during the build, so its digest is
+      // part of the build trust boundary.
+      matchManagers: ['dockerfile'],
+      matchPackageNames: ['docker/dockerfile'],
+      pinDigests: true,
+      addLabels: ['build-toolchain'],
     },
   ],
 }

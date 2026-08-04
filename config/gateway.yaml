@@ -61,25 +61,25 @@ extensions:
   # Queue bytes are payload bytes, not exact bbolt allocation, so max_size keeps
   # 50% headroom over the queue for database overhead and compaction.
   file_storage/all_signals:
-    directory: ${env:OTELBOX_STORAGE_DIR}/all_signals
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/all_signals
     create_directory: true
     fsync: true
     max_size: ${env:OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES:-12884901888}
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/all_signals
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/all_signals
       cleanup_on_start: true
 
   file_storage/selected_traces:
-    directory: ${env:OTELBOX_STORAGE_DIR}/selected_traces
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/selected_traces
     create_directory: true
     fsync: true
     max_size: ${env:OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES:-12884901888}
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/selected_traces
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/selected_traces
       cleanup_on_start: true
 
 receivers:
@@ -101,6 +101,10 @@ receivers:
       http:
         endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:14320
         max_request_body_size: 2097152
+        read_header_timeout: 10s
+        read_timeout: 30s
+        write_timeout: 30s
+        idle_timeout: 1m
         auth:
           authenticator: bearertokenauth/ingest
 
@@ -123,20 +127,34 @@ processors:
     spike_limit_percentage: ${env:OTELBOX_MEMORY_SPIKE_LIMIT_PERCENTAGE:-15}
 
   # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
-  # A deny-list — `allow_all_keys` keeps it one; an allow-list would silently
-  # drop every attribute nobody enumerated, leaving healthy-looking empty
-  # telemetry. Add patterns in all three profiles or in none.
+  # A bounded credential deny-list, not a general PII scrubber. It scans
+  # attribute keys and string values plus scalar and structured log bodies; it
+  # cannot inspect every OTLP string carrier. docs/redaction.md owns the exact
+  # coverage boundary and producer obligations. Add patterns in every profile.
   redaction/secrets:
     allow_all_keys: true
+    # Preserve non-string attribute types. Nested map/slice attributes are a
+    # documented producer-side boundary because scanning them would stringify
+    # the whole value whenever one nested match fired.
+    redact_all_types: false
+    # Counts, never key names. This is record-level evidence that the control
+    # fired, not a replacement for a far-end leak probe.
+    summary: info
     blocked_key_patterns:
-      - '(?i).*authorization.*'
-      - '(?i).*api[._-]?key.*'
-      - '(?i).*cookie.*'
-      - '(?i)(^|.*[._-])(access|refresh|auth|secret|bearer)[._-]?token($|[._-].*)'
-      - '(?i).*password.*'
+      - '(?i)(^|.*[._-])(auth|authorization|cookie|token|secret|credential|password|passwd|pwd|passphrase|signature|dsn)($|[._-].*)'
+      - '(?i)(^|.*[._-])(api[._-]?key|private[._-]?key|connection[._-]?string)($|[._-].*)'
     blocked_values:
-      - '(?i)Bearer\s+\S+'
-      - '(?i)(sk|rk|pk|api)[-_][A-Za-z0-9_-]{12,}'
+      - '(?i)\b(Bearer|Basic)\s+\S+'
+      - '(?i)^(sk|rk|pk)[-_][A-Za-z0-9_-]{16,}$'
+      - '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'
+      - '\b(AKIA|ASIA)[A-Z0-9]{16}\b'
+      - '\bgh[pousr]_[A-Za-z0-9]{20,}\b'
+      - '\bgithub_pat_[A-Za-z0-9_]{20,}\b'
+      - '\bxox[baprs]-[A-Za-z0-9-]{10,}\b'
+      - '\bAIza[0-9A-Za-z_-]{20,}\b'
+      - '(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@'
+      - '(?i)"?(api[._-]?key|client[._-]?secret|password|passwd|pwd|passphrase|token)"?\s*[:=]\s*"?[^",\s;&}]+"?'
+      - '(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----'
 
   # <<< SHARED
 
@@ -160,6 +178,8 @@ exporters:
       storage: file_storage/all_signals
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
+      # A deployment override must remain larger than the 2 MiB ingest
+      # envelope; an oversized item cannot fit a blocking persistent queue.
       queue_size: ${env:OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES:-8589934592}
       block_on_overflow: true
       batch:

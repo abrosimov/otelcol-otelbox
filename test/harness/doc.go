@@ -18,10 +18,15 @@
 // gone.
 //
 // This harness closes that gap by standing up the real thing: processes of the
-// binary under test, in the roles it actually serves, wired to each other over
+// binary under test in the edge and gateway roles, wired to each other over
 // loopback across the same authenticated, TLS-verified hop the roles define. It
 // asserts on what came out of the far end, which is the only signal the
 // incident would have moved.
+//
+// The host-agent role is outside this harness. Its journald receiver is
+// Linux-only and its useful assertions depend on the target host's /proc,
+// journal and service-account permissions, so the consuming deployment must
+// validate and smoke it on that host.
 //
 // # What it proves
 //
@@ -34,10 +39,11 @@
 //  1. Happy path — a log posted to the edge reaches the gateway's sink. One
 //     assertion covering the whole chain: edge receiver, processors, exporter,
 //     bearer-token authentication, gateway receiver, gateway exporter.
-//  2. Redaction — credential-shaped attribute values never reach the sink,
-//     while the record carrying them does. The privacy invariant the collector
-//     exists for, and the one the role profiles carry an identical
-//     redaction/secrets block in order to keep.
+//  2. Redaction — the configured credential corpus never reaches the sink,
+//     while the record carrying it does and representative ordinary values
+//     remain unchanged. The gateway is loaded with a CI-only redaction bypass,
+//     so this result is attributable to the edge rather than to either of two
+//     identical processors.
 //  3. Selected routing — an ordinary trace reaches only the ordinary recipient,
 //     while a trace classified with `otelbox.telemetry.class=llm` additionally
 //     reaches the OTLP/HTTP recipient. That backend accepts only protobuf with
@@ -66,6 +72,10 @@
 //
 // TestGatewayPersistsSelectedTraceBeforeAcknowledgement applies the same
 // SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
+//
+// TestGatewayRedaction posts logs, traces and metrics directly to the gateway
+// without the bypass above. It proves the same configured corpus on the
+// ordinary recipient and the additional selected-traces recipient.
 //
 // TestRequiredRecipientCouplingUnderQueuePressure: required gateway recipients are
 // not independent under `block_on_overflow: true`. A stopped recipient with queue

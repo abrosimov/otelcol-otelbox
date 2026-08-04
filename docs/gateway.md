@@ -29,11 +29,9 @@ repository renders the list explicitly.
 
 The selected-traces branch deliberately exposes only generic OTLP/HTTP,
 credential-file, arbitrary-header and filter capabilities. A consuming
-deployment maps those inputs to its concrete backend. For the current Langfuse
-4 deployment, `remote_server_setup` owns the `/api/public/otel` base endpoint,
-the complete Basic authorisation value and the
-`x-langfuse-ingestion-version: 4` header. This repository does not pin the
-vendor, image version or credential.
+deployment owns the concrete backend endpoint, path, authorisation scheme,
+protocol values and version; none is part of this repository's reference
+contract.
 
 The route marker only selects delivery. Producers and instrumentation own the
 backend's semantic span attributes and trace context; the gateway must not
@@ -104,7 +102,10 @@ edge ingress 1 MiB -> edge batch 1.5 MiB -> gateway ingress 2 MiB
 
 Compression does not increase receiver headroom: limits apply to the decoded
 message as well. A deployment that changes one rung must prove the entire
-ladder, especially the final receiver limit.
+ladder, especially the final receiver limit. Every rendered recipient queue
+must also exceed the gateway's 2 MiB accepted-request envelope: a single item
+larger than its persistent byte queue cannot be enqueued and blocks the request
+until its context expires.
 
 ## Authentication and transport
 
@@ -141,7 +142,7 @@ tests cover the queue-headroom, overflow and replay boundaries.
 | Endpoint | Purpose |
 | --- | --- |
 | `${OTELBOX_BIND_HOST}:14319` | Authenticated OTLP/gRPC ingest, up to 2 MiB per message. |
-| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 2 MiB per request. |
+| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 2 MiB per request; 10 s header, 30 s read/write and 1 min idle timeouts. |
 | `${OTELBOX_BIND_HOST}:8889/metrics` | Detailed Collector metrics and self-scrape target. |
 | `${OTELBOX_HEALTH_ENDPOINT}/status` | Lifecycle health only; full queues and rejected exports do not make it unhealthy. |
 

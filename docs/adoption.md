@@ -81,7 +81,9 @@ configuration and its own validation rather than restoring the 1.x layer.
 Numeric capacity inputs use byte units and have defaults only when the variable
 is absent. An exported empty value becomes a zero value and can mean unlimited,
 no splitting or invalid configuration depending on the component. Render
-explicit production budgets.
+explicit production budgets. `OTELBOX_STORAGE_DIR` instead defaults to an
+invalid `/dev/null/...-is-required` sentinel so an absent storage root fails
+validation; reject exported-empty storage values because they bypass it.
 
 Exporter IDs are part of persistent queue identity. Renaming `otlp/gateway` or
 an ordinal backend ID to a named `otlp_grpc/<recipient>` instance does not

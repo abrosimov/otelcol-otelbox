@@ -48,8 +48,8 @@ receivers:
         endpoint: 127.0.0.1:34348
 
   # A literal target, because the harness supplies no OTELBOX_BIND_HOST and
-  # expansion runs over the merged map. Nothing scrapes it: the pipeline below
-  # drops this receiver, so it is configured and never built.
+  # expansion runs over the merged map. The pipeline below keeps it but points
+  # it at a dead test address.
   prometheus/self:
     config:
       scrape_configs:
@@ -57,7 +57,7 @@ receivers:
           scrape_interval: 30s
           static_configs:
             - targets:
-                - 127.0.0.1:34899
+                - 127.0.0.1:1
 
 exporters:
   otlp_grpc/all_signals:
@@ -81,10 +81,8 @@ exporters:
       storage: file_storage/coupling_stalled
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
-      # Cannot usefully go lower: upstream refuses a queue below the sender
-      # batcher's inherited 1 MiB `min_size`, and a single record must still
-      # fit, since a request larger than the queue is rejected rather than
-      # blocked.
+      # The 512 KiB test records fit. A larger-than-capacity item would block
+      # until its request context expires because this is a persistent queue.
       queue_size: 2097152
       block_on_overflow: true
       batch:
@@ -129,8 +127,8 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
       exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
-    # Repointing prevents the self-scrape from changing the queue-fill rate.
+    # The dead target above prevents self telemetry from changing the fill rate.
     metrics/self:
-      receivers: [otlp]
+      receivers: [prometheus/self]
       processors: [memory_limiter, redaction/secrets]
       exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]

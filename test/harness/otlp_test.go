@@ -64,6 +64,35 @@ type otlpString struct {
 	StringValue string `json:"stringValue"`
 }
 
+type metricsPayload struct {
+	ResourceMetrics []resourceMetrics `json:"resourceMetrics"`
+}
+
+type resourceMetrics struct {
+	Resource     resourceValue  `json:"resource"`
+	ScopeMetrics []scopeMetrics `json:"scopeMetrics"`
+}
+
+type scopeMetrics struct {
+	Scope   scopeValue `json:"scope"`
+	Metrics []metric   `json:"metrics"`
+}
+
+type metric struct {
+	Name  string `json:"name"`
+	Gauge gauge  `json:"gauge"`
+}
+
+type gauge struct {
+	DataPoints []numberDataPoint `json:"dataPoints"`
+}
+
+type numberDataPoint struct {
+	TimeUnixNano string      `json:"timeUnixNano"`
+	AsInt        string      `json:"asInt"`
+	Attributes   []attribute `json:"attributes"`
+}
+
 type tracesPayload struct {
 	ResourceSpans []resourceSpans `json:"resourceSpans"`
 }
@@ -118,13 +147,14 @@ func logPayload(t *testing.T, marker, body string, extra ...attribute) []byte {
 	return payload
 }
 
-func tracePayload(t *testing.T, marker string, selected bool) []byte {
+func tracePayload(t *testing.T, marker string, selected bool, extra ...attribute) []byte {
 	t.Helper()
 
 	started := time.Now()
 	resourceAttributes := []attribute{
 		{Key: "service.name", Value: otlpString{"otelbox-integration-test"}},
 	}
+	resourceAttributes = append(resourceAttributes, extra...)
 	if selected {
 		resourceAttributes = append(resourceAttributes, attribute{
 			Key:   "otelbox.telemetry.class",
@@ -144,16 +174,45 @@ func tracePayload(t *testing.T, marker string, selected bool) []byte {
 					Kind:              1,
 					StartTimeUnixNano: strconv.FormatInt(started.UnixNano(), 10),
 					EndTimeUnixNano:   strconv.FormatInt(started.Add(time.Millisecond).UnixNano(), 10),
-					Attributes: []attribute{{
+					Attributes: append([]attribute{{
 						Key:   markerKey,
 						Value: otlpString{marker},
-					}},
+					}}, extra...),
 				}},
 			}},
 		}},
 	})
 	if err != nil {
 		t.Fatalf("could not marshal the OTLP trace payload for marker %s: %v", marker, err)
+	}
+	return payload
+}
+
+func metricPayload(t *testing.T, marker string, extra ...attribute) []byte {
+	t.Helper()
+
+	attributes := append([]attribute{{Key: markerKey, Value: otlpString{marker}}}, extra...)
+	payload, err := json.Marshal(metricsPayload{
+		ResourceMetrics: []resourceMetrics{{
+			Resource: resourceValue{Attributes: append([]attribute{{
+				Key:   "service.name",
+				Value: otlpString{"otelbox-integration-test"},
+			}}, extra...)},
+			ScopeMetrics: []scopeMetrics{{
+				Scope: scopeValue{Name: "otelbox.integration"},
+				Metrics: []metric{{
+					Name: "otelbox.integration.value",
+					Gauge: gauge{DataPoints: []numberDataPoint{{
+						TimeUnixNano: strconv.FormatInt(time.Now().UnixNano(), 10),
+						AsInt:        "1",
+						Attributes:   attributes,
+					}}},
+				}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("could not marshal the OTLP metric payload for marker %s: %v", marker, err)
 	}
 	return payload
 }
@@ -176,6 +235,46 @@ func credentialAttributes(secret string) []attribute {
 	}
 }
 
+func credentialCorpus(secret string) ([]attribute, []string) {
+	values := []string{
+		"Basic " + secret,
+		"eyJ" + secret + "." + secret + "." + secret,
+		"AKIA1234567890ABCDEF",
+		"ghp_1234567890abcdefghijklmnopqrstuv",
+		"github_pat_1234567890abcdefghijklmnopqrstuv",
+		"xoxb-1234567890-abcdefghijklmnop",
+		"AIza1234567890abcdefghijklmnopqrstuv",
+		"postgres://admin:" + secret + "@db.example/telemetry",
+		"client_secret=" + secret,
+		"-----BEGIN PRIVATE KEY-----\n" + secret + "\n-----END PRIVATE KEY-----",
+	}
+
+	attributes := credentialAttributes(secret)
+	keyCases := []string{
+		"token",
+		"id_token",
+		"x-amz-security-token",
+		"client_secret",
+		"private_key",
+		"db.connection_string",
+		"credential",
+		"passwd",
+		"passphrase",
+		"signature",
+	}
+	for _, key := range keyCases {
+		attributes = append(attributes, attribute{Key: key, Value: otlpString{secret}})
+	}
+	for i, value := range values {
+		attributes = append(attributes, attribute{
+			Key:   fmt.Sprintf("otelbox.test.payload.%d", i),
+			Value: otlpString{value},
+		})
+	}
+
+	return attributes, append([]string{secret}, values...)
+}
+
 var (
 	// Separate clients rather than one, because the two answer different
 	// questions: a probe that has not been answered in 5s is a listener that is
@@ -195,6 +294,10 @@ func postLogs(client *http.Client, port int, token string, payload []byte) (int,
 
 func postTraces(client *http.Client, port int, token string, payload []byte) (int, string, error) {
 	return postOTLPJSON(client, port, "traces", token, payload)
+}
+
+func postMetrics(client *http.Client, port int, token string, payload []byte) (int, string, error) {
+	return postOTLPJSON(client, port, "metrics", token, payload)
 }
 
 func postOTLPJSON(client *http.Client, port int, signal, token string, payload []byte) (int, string, error) {
@@ -250,6 +353,22 @@ func sendTraceOrFail(t *testing.T, description string, port int, payload []byte)
 		return false
 	case status != http.StatusOK:
 		t.Errorf("%s: the OTLP receiver on port %d refused the trace (HTTP %d): %s",
+			description, port, status, body)
+		return false
+	}
+	return true
+}
+
+func sendMetricOrFail(t *testing.T, description string, port int, payload []byte) bool {
+	t.Helper()
+
+	status, body, err := postMetrics(sendClient, port, "", payload)
+	switch {
+	case err != nil:
+		t.Errorf("%s: the OTLP receiver on port %d did not answer: %v", description, port, err)
+		return false
+	case status != http.StatusOK:
+		t.Errorf("%s: the OTLP receiver on port %d refused the metric (HTTP %d): %s",
 			description, port, status, body)
 		return false
 	}

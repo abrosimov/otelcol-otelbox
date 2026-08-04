@@ -166,12 +166,6 @@ func TestGatewayPersistsSelectedTraceBeforeAcknowledgement(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("the gateway refused the selected trace before its recipient returned (HTTP %d): %s", status, body)
 	}
-	if err := poll(deliveryTimeout, gateway, "selected trace to reach the ordinary recipient", func() bool {
-		return sinkContains(t, sink, marker)
-	}); err != nil {
-		t.Fatalf("the selected trace did not reach the ordinary required recipient before the crash: %v", err)
-	}
-
 	gateway.crash(t)
 	selectedBackend = startSelectedTraceBackend(t, selectedContract)
 

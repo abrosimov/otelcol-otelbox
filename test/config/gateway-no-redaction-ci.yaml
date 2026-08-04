@@ -1,0 +1,32 @@
+# otelbox — GATEWAY REDACTION BYPASS, CI ONLY. Loaded after gateway-ci.yaml by
+# TestEdgeToGatewayDelivery so any credential removal observed at the far end
+# can be attributed to the edge rather than to a second copy of the same
+# processor. TestGatewayRedaction loads no such overlay and proves the gateway
+# independently.
+#
+# Lists replace rather than merge. Every pipeline is repeated so a new gateway
+# pipeline cannot accidentally retain redaction and make the edge test pass for
+# the wrong reason.
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [file/sink]
+    traces/selected:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/selected_traces]
+      exporters: [otlp_http/selected_traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [file/sink]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [file/sink]
+    metrics/self:
+      receivers: [prometheus/self]
+      processors: [memory_limiter]
+      exporters: [file/sink]

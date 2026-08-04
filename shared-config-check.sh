@@ -46,6 +46,8 @@ trap 'rm -rf "$workdir"' EXIT
 status=0
 reference=""
 reference_file=""
+reference_extract=""
+config_index=0
 
 for config in "${configs[@]}"; do
     if [ ! -f "$config" ]; then
@@ -53,8 +55,8 @@ for config in "${configs[@]}"; do
         exit 2
     fi
 
-    opens=$(grep -c -- "$open_marker" "$config" || true)
-    closes=$(grep -c -- "$close_marker" "$config" || true)
+    opens=$(grep -F -c -- "$open_marker" "$config" || true)
+    closes=$(grep -F -c -- "$close_marker" "$config" || true)
 
     # An unbalanced or missing marker must fail loudly. Left to the extraction
     # below it would silently yield a short region, or none at all, and three
@@ -66,13 +68,29 @@ for config in "${configs[@]}"; do
         exit 2
     fi
 
-    extracted="$workdir/$(echo "$config" | tr '/' '_').shared"
+    extracted="$workdir/$config_index.shared"
+    config_index=$((config_index + 1))
     # `close` is a reserved awk function name, hence the suffixed variables.
-    awk -v openm="$open_marker" -v closem="$close_marker" '
-        index($0, openm) { inblock = 1; next }
-        index($0, closem) { inblock = 0; next }
+    if ! awk -v openm="$open_marker" -v closem="$close_marker" '
+        index($0, openm) {
+            if (inblock) exit 2
+            inblock = 1
+            region++
+            print openm, region
+            next
+        }
+        index($0, closem) {
+            if (!inblock) exit 2
+            inblock = 0
+            print closem, region
+            next
+        }
         inblock { print }
-    ' "$config" > "$extracted"
+        END { if (inblock) exit 2 }
+    ' "$config" > "$extracted"; then
+        echo "shared-config-check: $config has nested or out-of-order shared markers" >&2
+        exit 2
+    fi
 
     if [ ! -s "$extracted" ]; then
         echo "shared-config-check: $config yielded an empty shared region" >&2
@@ -84,6 +102,7 @@ for config in "${configs[@]}"; do
     if [ -z "$reference" ]; then
         reference="$digest"
         reference_file="$config"
+        reference_extract="$extracted"
         echo "shared-config-check: $config  $digest  (reference, $(wc -l < "$extracted" | tr -d ' ') lines)"
         continue
     fi
@@ -92,7 +111,7 @@ for config in "${configs[@]}"; do
         echo "shared-config-check: $config  $digest  ok"
     else
         echo "shared-config-check: $config  $digest  DIVERGED from $reference_file" >&2
-        diff -u "$workdir/$(echo "$reference_file" | tr '/' '_').shared" "$extracted" >&2 || true
+        diff -u "$reference_extract" "$extracted" >&2 || true
         status=1
     fi
 done
