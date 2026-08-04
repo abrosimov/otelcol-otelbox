@@ -184,3 +184,105 @@ func TestGatewayPersistsSelectedTraceBeforeAcknowledgement(t *testing.T) {
 			marker, err, selectedBackend.diagnostics())
 	}
 }
+
+func TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement(t *testing.T) {
+	state := t.TempDir()
+	sink := filepath.Join(state, "ordinary-sink.json")
+	tokenFile := filepath.Join(state, "ingest-tokens")
+	storage := filepath.Join(state, "gateway-storage")
+	token := "otelbox-ci-ordinary-durable-" + randomHex(t, 16)
+
+	writeTokenFile(t, tokenFile, token)
+	selectedContract := newSelectedTraceContract(t, state, selectedTraceEndpoint)
+	gatewayEnv := map[string]string{
+		"OTELBOX_INGEST_TOKEN_FILE":              tokenFile,
+		"OTELBOX_STORAGE_DIR":                    storage,
+		"OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT": ordinaryBackendEndpoint,
+		"OTELBOX_CI_ORDINARY_ENDPOINT":           ordinaryBackendEndpoint,
+	}
+	selectedContract.addEnv(gatewayEnv)
+	gatewaySpec := collectorSpec{
+		name:     "ordinary-gateway-before-crash",
+		stateDir: state,
+		env:      gatewayEnv,
+		configs: []string{
+			configPath("config", "gateway.yaml"),
+			configPath("test", "config", "gateway-network-ci.yaml"),
+		},
+	}
+
+	gateway := startCollector(t, gatewaySpec)
+	collectors := []*collector{gateway}
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		dumpDiagnostics(t,
+			[]diagnosticSection{
+				{"gateway exporter metrics", exporterMetrics(ordinaryGatewayMetricsPort,
+					"otelcol_exporter_sent", "otelcol_exporter_send_failed",
+					"otelcol_exporter_enqueue_failed", "otelcol_exporter_queue")},
+				{fmt.Sprintf("ordinary sink (%d bytes)", sinkSize(sink)), sinkTail(sink, 10)},
+			}, collectors...)
+	}()
+
+	if err := poll(readyTimeout, gateway, "the gateway's ordinary-signal listener", func() bool {
+		return gatewayResponds(ordinaryGatewayHTTPPort)
+	}); err != nil {
+		t.Fatalf("the gateway never accepted a connection: %v", err)
+	}
+
+	logMarker := "otelbox-ci-ordinary-log-" + randomHex(t, 8)
+	metricMarker := "otelbox-ci-ordinary-metric-" + randomHex(t, 8)
+	traceMarker := "otelbox-ci-ordinary-trace-" + randomHex(t, 8)
+	tests := []struct {
+		name    string
+		marker  string
+		payload []byte
+		post    func(*http.Client, int, string, []byte) (int, string, error)
+	}{
+		{name: "logs", marker: logMarker,
+			payload: logPayload(t, logMarker, "ordinary log persisted before acknowledgement"), post: postLogs},
+		{name: "metrics", marker: metricMarker, payload: metricPayload(t, metricMarker), post: postMetrics},
+		{name: "traces", marker: traceMarker, payload: tracePayload(t, traceMarker, false), post: postTraces},
+	}
+
+	for _, test := range tests {
+		status, body, err := test.post(sendClient, ordinaryGatewayHTTPPort, token, test.payload)
+		if err != nil {
+			t.Fatalf("the gateway did not answer the %s request: %v", test.name, err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("the gateway refused the %s request before its recipient returned (HTTP %d): %s",
+				test.name, status, body)
+		}
+	}
+	gateway.crash(t)
+
+	backend := startBackend(t, state, "ordinary-backend", ordinaryBackendEndpoint,
+		sink, ordinaryBackendMetricsPort)
+	collectors = append(collectors, backend)
+	if err := poll(readyTimeout, backend, "the ordinary backend's OTLP listener", func() bool {
+		return endpointAccepts(ordinaryBackendEndpoint)
+	}); err != nil {
+		t.Fatalf("the ordinary backend never accepted a connection: %v", err)
+	}
+
+	gatewaySpec.name = "ordinary-gateway-after-crash"
+	restarted := startCollector(t, gatewaySpec)
+	collectors = append(collectors, restarted)
+	if err := poll(readyTimeout, restarted, "the restarted gateway's ordinary-signal listener", func() bool {
+		return gatewayResponds(ordinaryGatewayHTTPPort)
+	}); err != nil {
+		t.Fatalf("the restarted gateway never accepted a connection: %v", err)
+	}
+
+	for _, test := range tests {
+		if err := poll(deliveryTimeout, restarted, test.name+" marker to reach the recovered recipient", func() bool {
+			return sinkContains(t, sink, test.marker)
+		}); err != nil {
+			t.Fatalf("%s marker %s was acknowledged before the crash but did not survive it: %v",
+				test.name, test.marker, err)
+		}
+	}
+}

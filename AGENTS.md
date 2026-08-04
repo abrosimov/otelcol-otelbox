@@ -46,7 +46,7 @@ stdlib-only Go module that drives the built binary from outside.
 
 ```text
 edge        loopback OTLP -> origin -> redaction -> WAL -> one gateway
-gateway     authenticated OTLP -> redaction -> eligibility -> WAL per recipient -> N recipients
+gateway     authenticated OTLP -> redaction -> eligibility -> WAL per recipient/signal -> N recipients
 host-agent  host/journal/self telemetry -> redaction -> WAL -> gateway
 ```
 
@@ -116,6 +116,9 @@ graceful shutdown.
 boundary to the selected-traces HTTP recipient. Eligible records are required
 by the all-signal recipient set and that additional recipient.
 
+`TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement` applies the boundary
+to the signal-specific log, metric and trace gRPC WALs in one forced restart.
+
 ## Authentication and transport
 
 The gateway authenticates every OTLP request through one
@@ -177,16 +180,18 @@ such as `api`.
 
 - One authenticated OTLP receiver listens on ports 14319 and 14320; self
   metrics use 8889. Ingest is capped at 2 MiB.
-- Each recipient has separate storage and queue configuration. A storage
-  `max_size` applies per signal file, not per extension.
-- The reference has one example all-signal gRPC recipient and one traces-only
-  HTTP recipient selected by `otelbox.telemetry.class=llm`. Deployments render
-  the required all-signal cardinality; the binary does not fix it.
+- Each logical all-signal recipient has one exporter, storage extension and WAL
+  per signal, permitting independent queue and disk budgets.
+- The reference represents one all-signal gRPC recipient with the
+  `otlp_grpc/{logs,metrics,traces}` triplet and adds one traces-only HTTP
+  recipient selected by `otelbox.telemetry.class=llm`. Deployments render a
+  uniquely named triplet for every required all-signal recipient.
 - Fan-out is synchronous. A stopped recipient is isolated while its queue has
   headroom; once that blocking queue fills, backpressure reaches ingest. The
   healthy exporter may already have accepted the current record before the
   request blocks, so do not assert on exporter ordering.
-  `TestRequiredRecipientCouplingUnderQueuePressure` proves both states.
+  `TestRequiredRecipientCouplingUnderQueuePressure` proves both states and that
+  a full log queue does not block the separate metrics and traces queues.
 - Concrete recipient authentication and protocol values stay in the consuming
   deployment.
 

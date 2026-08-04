@@ -11,21 +11,22 @@ otelcol-otelbox --config config/gateway.yaml
 ## Recipient model
 
 Recipient count is configuration, not a binary limit. The reference profile
-demonstrates one all-signal gRPC recipient and one additional selected-traces
-HTTP recipient:
+demonstrates one logical all-signal gRPC recipient as three signal-specific
+exporter/storage pairs, plus one additional selected-traces HTTP recipient:
 
 | Data | Required recipients |
 | --- | --- |
-| Traces without a route classification | `otlp_grpc/all_signals` |
-| Traces with resource attribute `otelbox.telemetry.class=llm` | `otlp_grpc/all_signals` and `otlp_http/selected_traces` |
-| Metrics and logs, including gateway self-metrics | `otlp_grpc/all_signals` |
+| Traces without a route classification | `otlp_grpc/traces` |
+| Traces with resource attribute `otelbox.telemetry.class=llm` | `otlp_grpc/traces` and `otlp_http/selected_traces` |
+| Metrics, including gateway self-metrics | `otlp_grpc/metrics` |
+| Logs | `otlp_grpc/logs` |
 
-To render another recipient, add its exporter, a unique `file_storage`
-extension, the extension ID under `service.extensions`, and the exporter ID to
-every pipeline for which it is required. Removing any one of those four pieces
-is a contract change, not a harmless refactor. Static Collector YAML cannot
-expand an environment variable into an arbitrary list, so the consuming
-repository renders the list explicitly.
+To render another all-signal recipient, add a uniquely named exporter and
+`file_storage` extension for logs, metrics and traces, add all three extensions
+under `service.extensions`, and append the matching exporter to each pipeline.
+Removing any member of that triplet is a contract change, not a harmless
+refactor. Static Collector YAML cannot expand an environment variable into an
+arbitrary list, so the consuming repository renders the list explicitly.
 
 The selected-traces branch deliberately exposes only generic OTLP/HTTP,
 credential-file, arbitrary-header and filter capabilities. A consuming
@@ -62,8 +63,14 @@ Reference defaults apply only when a variable is absent:
 | `OTELBOX_MEMORY_LIMIT_PERCENTAGE` | 75 | Hard heap-pressure threshold relative to the cgroup limit. |
 | `OTELBOX_MEMORY_SPIKE_LIMIT_PERCENTAGE` | 15 | Spike allowance subtracted from the hard threshold. |
 | `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent workers per exporter and signal. |
-| `OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Per signal file, per recipient. |
-| `OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES` | 8 GiB | Per signal queue, per recipient. |
+| `OTELBOX_LOGS_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Log WAL for the reference all-signal recipient. |
+| `OTELBOX_LOGS_QUEUE_SIZE_BYTES` | 8 GiB | Log queue for the reference all-signal recipient. |
+| `OTELBOX_METRICS_STORAGE_MAX_SIZE_BYTES` | 2 GiB | Metrics WAL for the reference all-signal recipient. |
+| `OTELBOX_METRICS_QUEUE_SIZE_BYTES` | 1 GiB | Metrics queue for the reference all-signal recipient. |
+| `OTELBOX_TRACES_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Trace WAL for the reference all-signal recipient. |
+| `OTELBOX_TRACES_QUEUE_SIZE_BYTES` | 8 GiB | Trace queue for the reference all-signal recipient. |
+| `OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Selected-traces WAL. |
+| `OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES` | 8 GiB | Selected-traces queue. |
 | `OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES` | 3 MiB | Sender split limit, below the common 4 MiB downstream gRPC default. |
 
 The gateway profile assumes a cgroup memory limit. Set that limit in the
@@ -82,14 +89,15 @@ storage max_size >= queue bytes * 1.5
 ```
 
 A safety factor between 1.25 and 2 covers burstiness and estimation error. The
-reference 8 GiB queue and 12 GiB file cap preserve that 1.5 ratio. Gateway rates
-are aggregate across all edges and local agents; reusing an edge-sized budget
-without multiplying the measured ingress rate is incorrect.
+reference reserves 8/12 GiB for logs, 1/2 GiB for metrics and 8/12 GiB for
+traces; the larger metrics ratio leaves additional room for database overhead.
+Gateway rates are aggregate across all edges and local agents; reusing an
+edge-sized budget without multiplying the measured ingress rate is incorrect.
 
-`max_size` applies to each bbolt signal file. The reference topology has four
-files: three for the all-signal recipient and one for selected traces. Its
-theoretical configured cap is therefore 48 GiB before filesystem and compaction
-headroom. A deployment with N all-signal recipients has `3N + 1` files while the
+The reference topology has four bbolt files: three for the all-signal recipient
+and one for selected traces. Their configured caps total 38 GiB before
+filesystem and compaction headroom. A deployment with N all-signal recipients
+has `3N + 1` files and a default cap of `26 GiB * N + 12 GiB` while the
 selected-traces branch remains present. Size and alert from the rendered set.
 
 The default request ladder prevents a single accepted record from becoming

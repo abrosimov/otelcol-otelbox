@@ -59,8 +59,10 @@ those callers can retry. The host agent cannot back-pressure scrapers; it
 retains an outage up to its WAL capacity and rejects new samples once full.
 
 Gateway recipient eligibility is part of required delivery. Ordinary signals
-fan out to every rendered all-signal gRPC recipient; the reference shows one
-such instance. Traces classified with
+fan out to every rendered gRPC recipient. The reference shows three
+signal-specific exporter/WAL pairs—logs, metrics and traces—forming one logical
+all-signal recipient. This permits a separate outage budget for each signal.
+Traces classified with
 `otelbox.telemetry.class=llm` additionally enter a generic OTLP/HTTP recipient.
 The consuming deployment owns its concrete endpoint, credentials and protocol
 headers.
@@ -134,9 +136,12 @@ It proves:
 3. a record acknowledged while the gateway is down survives an edge SIGKILL;
 4. selected traces alone reach OTLP/HTTP with required auth/protocol headers and
    survive a gateway SIGKILL in that recipient's WAL;
-5. gateway fan-out leaves ingest unaffected only while every required recipient
-   queue has headroom; a full blocking queue backpressures the receiver;
-6. non-empty allowlist replacement revokes the previous bearer token.
+5. ordinary logs, metrics and traces acknowledged by the gateway survive its
+   SIGKILL in their signal-specific WALs;
+6. gateway fan-out leaves ingest unaffected only while every required recipient
+   queue has headroom; a full log queue backpressures log ingest without blocking
+   the separate metrics and traces queues;
+7. non-empty allowlist replacement revokes the previous bearer token.
 
 The black-box harness starts the `edge` and `gateway` roles. It does not execute
 the Linux-only host-agent receivers; validate and smoke that role on the target

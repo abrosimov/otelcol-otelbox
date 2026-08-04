@@ -783,10 +783,13 @@ jobs:
           - only classified traces reached the generic OTLP/HTTP recipient with
             its required authorisation and protocol headers, and its WAL replayed
             an acknowledged trace after a forced gateway termination;
+          - ordinary logs, metrics and traces acknowledged by the gateway
+            replayed from their signal-specific WALs after a forced termination;
           - non-empty bearer allowlist replacement revoked the previous token;
           - under queue pressure, a stopped gateway recipient left its healthy
             neighbour and ingest untouched until its own queue filled, then
-            backpressured the receiver through synchronous fan-out.
+            backpressured the receiver through synchronous fan-out, while the
+            separate metrics and traces queues remained available.
 
           Built from ${GITHUB_SHA}.
           EOF

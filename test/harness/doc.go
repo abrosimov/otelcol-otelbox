@@ -73,6 +73,9 @@
 // TestGatewayPersistsSelectedTraceBeforeAcknowledgement applies the same
 // SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
 //
+// TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement applies that boundary
+// to the signal-specific log, metric and trace gRPC WALs in one crash.
+//
 // TestGatewayRedaction posts logs, traces and metrics directly to the gateway
 // without the bypass above. It proves the same configured corpus on the
 // ordinary recipient and the additional selected-traces recipient.
@@ -80,8 +83,8 @@
 // TestRequiredRecipientCouplingUnderQueuePressure: required gateway recipients are
 // not independent under `block_on_overflow: true`. A stopped recipient with queue
 // headroom leaves ingest and the healthy recipient untouched; once its queue is
-// full, synchronous fan-out backpressures ingest. A runbook in a consuming
-// repository claims the recipients are always independent.
+// full, synchronous fan-out backpressures ingest. A full log queue does not
+// block the separately stored metric and trace queues.
 //
 // # Usage
 //

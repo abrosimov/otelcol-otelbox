@@ -109,7 +109,7 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 		t.Fatalf("the gateway never accepted a connection: %v", err)
 	}
 
-	send := func(t *testing.T, marker string) error {
+	sendLog := func(t *testing.T, marker string) error {
 		t.Helper()
 
 		payload := logPayload(t, marker, strings.Repeat("x", couplingPadding))
@@ -125,9 +125,10 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 
 	headroomMarker := "otelbox-ci-headroom-" + randomHex(t, 8)
 	pressureMarker := ""
+	var isolatedSignalMarkers []string
 
 	t.Run("a stopped recipient with queue headroom does not affect the healthy recipient", func(t *testing.T) {
-		if err := send(t, headroomMarker); err != nil {
+		if err := sendLog(t, headroomMarker); err != nil {
 			t.Fatalf("could not post the first record to the gateway: %v", err)
 		}
 		if err := poll(deliveryTimeout, gateway, "marker "+headroomMarker+" to reach the healthy recipient", func() bool {
@@ -144,7 +145,7 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 
 			// A bounded post timeout is the externally visible effect of the full
 			// persistent queue blocking synchronous fan-out at the front door.
-			if err := send(t, marker); err != nil {
+			if err := sendLog(t, marker); err != nil {
 				if !gateway.alive() {
 					t.Fatalf("record %d failed because the gateway exited, not because a queue applied backpressure: %v", record, err)
 				}
@@ -170,9 +171,9 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 
 		if err := poll(failureTimeout, gateway, "the blocked recipient's enqueue-failure metric", func() bool {
 			return exporterMetricPositive(couplingGatewayMetricsPort,
-				"otelcol_exporter_enqueue_failed", "otlp_grpc/coupling_stalled")
+				"otelcol_exporter_enqueue_failed", "otlp_grpc/coupling_stalled_logs")
 		}); err != nil {
-			t.Fatalf("ingest timed out but otlp_grpc/coupling_stalled reported no enqueue failure, so the timeout cannot be attributed to its full queue: %v\n%s", err,
+			t.Fatalf("ingest timed out but otlp_grpc/coupling_stalled_logs reported no enqueue failure, so the timeout cannot be attributed to its full queue: %v\n%s", err,
 				exporterMetrics(couplingGatewayMetricsPort,
 					"otelcol_exporter_queue_size", "otelcol_exporter_queue_capacity",
 					"otelcol_exporter_enqueue_failed"))
@@ -186,6 +187,38 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 			exporterMetrics(couplingGatewayMetricsPort,
 				"otelcol_exporter_queue_size", "otelcol_exporter_queue_capacity",
 				"otelcol_exporter_enqueue_failed"))
+	})
+
+	t.Run("a full log queue does not block metrics or traces", func(t *testing.T) {
+		metricMarker := "otelbox-ci-isolated-metric-" + randomHex(t, 8)
+		traceMarker := "otelbox-ci-isolated-trace-" + randomHex(t, 8)
+		tests := []struct {
+			name    string
+			marker  string
+			payload []byte
+			post    func(*http.Client, int, string, []byte) (int, string, error)
+		}{
+			{name: "metrics", marker: metricMarker, payload: metricPayload(t, metricMarker), post: postMetrics},
+			{name: "traces", marker: traceMarker, payload: tracePayload(t, traceMarker, false), post: postTraces},
+		}
+
+		for _, test := range tests {
+			status, body, err := test.post(sendClient, couplingGatewayHTTPPort, ingestToken, test.payload)
+			switch {
+			case err != nil:
+				t.Fatalf("the full log queue blocked the %s pipeline: %v", test.name, err)
+			case status != http.StatusOK:
+				t.Fatalf("the %s pipeline returned HTTP %d while only the log queue was full: %s",
+					test.name, status, body)
+			}
+			if err := poll(deliveryTimeout, gateway, test.marker+" to reach the healthy recipient", func() bool {
+				return sinkContains(t, healthySink, test.marker)
+			}); err != nil {
+				t.Fatalf("%s marker %s did not reach the healthy recipient while the log queue was full: %v",
+					test.name, test.marker, err)
+			}
+			isolatedSignalMarkers = append(isolatedSignalMarkers, test.marker)
+		}
 	})
 
 	t.Run("the backlog drains and ingest recovers once the stopped recipient returns", func(t *testing.T) {
@@ -207,12 +240,20 @@ func TestRequiredRecipientCouplingUnderQueuePressure(t *testing.T) {
 			t.Fatalf("marker %s was acknowledged while the recipient was stopped but never reached it after recovery: %v",
 				headroomMarker, err)
 		}
+		for _, marker := range isolatedSignalMarkers {
+			if err := poll(deliveryTimeout, gateway, "isolated signal marker to reach the recovered backend", func() bool {
+				return sinkContains(t, stalledSink, marker)
+			}); err != nil {
+				t.Fatalf("marker %s was acknowledged on an isolated signal queue but did not survive recipient recovery: %v",
+					marker, err)
+			}
+		}
 
 		var recoveryMarker string
 		var lastSendErr error
 		if err := poll(recoveryTimeout, gateway, "ingest to accept a post after recipient recovery", func() bool {
 			recoveryMarker = "otelbox-ci-recovered-" + randomHex(t, 8)
-			lastSendErr = send(t, recoveryMarker)
+			lastSendErr = sendLog(t, recoveryMarker)
 			return lastSendErr == nil
 		}); err != nil {
 			t.Fatalf("the gateway did not resume accepting posts after the recipient returned: %v; last post error: %v", err, lastSendErr)

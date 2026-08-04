@@ -7,10 +7,10 @@
 #
 # The role authenticates one OTLP ingress, redacts accepted telemetry and fans it
 # out to every recipient eligible for that signal. Each required recipient owns
-# a separate WAL. The reference instantiates one all-signal OTLP/gRPC recipient
-# and one selected-traces OTLP/HTTP recipient as examples of the two eligibility
-# patterns; neither the binary nor the profile fixes deployment cardinality. A
-# deployment renders every required recipient with its own stable component ID.
+# one WAL per signal. The reference instantiates one logical all-signal OTLP/gRPC
+# recipient as three signal-specific exporter/storage pairs, plus one
+# selected-traces OTLP/HTTP recipient. A deployment renders the same triplet for
+# every required all-signal recipient; cardinality is not a binary limit.
 #
 # Required environment: OTELBOX_STORAGE_DIR, OTELBOX_INGEST_TOKEN_FILE,
 # OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT,
@@ -56,19 +56,41 @@ extensions:
         key: ${env:OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_NAME}
         value: ${env:OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE}
 
-  # Each all-signal gRPC recipient owns three capped bbolt files: traces,
-  # metrics and logs. The selected-traces recipient owns only a traces file.
+  # Separate extensions let each signal carry its own disk budget; the
+  # selected-traces recipient owns only a traces file.
   # Queue bytes are payload bytes, not exact bbolt allocation, so max_size keeps
-  # 50% headroom over the queue for database overhead and compaction.
-  file_storage/all_signals:
-    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/all_signals
+  # at least 50% headroom for database overhead and compaction.
+  file_storage/logs:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/logs
     create_directory: true
     fsync: true
-    max_size: ${env:OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES:-12884901888}
+    max_size: ${env:OTELBOX_LOGS_STORAGE_MAX_SIZE_BYTES:-12884901888}
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/all_signals
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/logs
+      cleanup_on_start: true
+
+  file_storage/metrics:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/metrics
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_METRICS_STORAGE_MAX_SIZE_BYTES:-2147483648}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/metrics
+      cleanup_on_start: true
+
+  file_storage/traces:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/traces
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_TRACES_STORAGE_MAX_SIZE_BYTES:-12884901888}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/traces
       cleanup_on_start: true
 
   file_storage/selected_traces:
@@ -168,19 +190,70 @@ processors:
       - 'resource.attributes["otelbox.telemetry.class"] != "llm"'
 
 exporters:
-  # A consuming repository renders one named instance per all-signal recipient.
-  otlp_grpc/all_signals:
+  # These three exporters are one logical all-signal recipient. A deployment
+  # renders a uniquely named triplet for every additional recipient.
+  otlp_grpc/logs:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
     sending_queue:
       enabled: true
-      storage: file_storage/all_signals
+      storage: file_storage/logs
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       # A deployment override must remain larger than the 2 MiB ingest
       # envelope; an oversized item cannot fit a blocking persistent queue.
-      queue_size: ${env:OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES:-8589934592}
+      queue_size: ${env:OTELBOX_LOGS_QUEUE_SIZE_BYTES:-8589934592}
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        # Three MiB stays below the common 4 MiB downstream gRPC default.
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+  otlp_grpc/metrics:
+    endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/metrics
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
+      sizer: bytes
+      # A deployment override must remain larger than the 2 MiB ingest
+      # envelope; an oversized item cannot fit a blocking persistent queue.
+      queue_size: ${env:OTELBOX_METRICS_QUEUE_SIZE_BYTES:-1073741824}
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        # Three MiB stays below the common 4 MiB downstream gRPC default.
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+  otlp_grpc/traces:
+    endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      storage: file_storage/traces
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
+      sizer: bytes
+      # A deployment override must remain larger than the 2 MiB ingest
+      # envelope; an oversized item cannot fit a blocking persistent queue.
+      queue_size: ${env:OTELBOX_TRACES_QUEUE_SIZE_BYTES:-8589934592}
       block_on_overflow: true
       batch:
         flush_timeout: 200ms
@@ -226,7 +299,9 @@ service:
     - healthcheckv2
     - bearertokenauth/ingest
     - headers_setter/selected_traces
-    - file_storage/all_signals
+    - file_storage/logs
+    - file_storage/metrics
+    - file_storage/traces
     - file_storage/selected_traces
   telemetry:
     # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
@@ -255,7 +330,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals]
+      exporters: [otlp_grpc/traces]
     # Only explicitly classified traces enter the additional HTTP WAL. A mixed
     # OTLP request is acknowledged only after both required pipeline paths have
     # persisted their eligible records.
@@ -266,12 +341,12 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals]
+      exporters: [otlp_grpc/metrics]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals]
+      exporters: [otlp_grpc/logs]
     metrics/self:
       receivers: [prometheus/self]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals]
+      exporters: [otlp_grpc/metrics]

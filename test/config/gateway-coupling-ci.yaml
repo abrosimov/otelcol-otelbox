@@ -6,8 +6,8 @@
 #
 # CI ONLY, never copied into a deployment. A second gateway overlay because
 # gateway-ci.yaml's `file` sink cannot be stopped and its queue cannot fill:
-# this one adds a second all-signal recipient to the reference recipient and
-# points both at processes the test can control.
+# this one adds a second logical all-signal recipient as another three-exporter
+# triplet and points both recipient groups at processes the test can control.
 #
 # Only queue sizes, plaintext test transport and ports move, and none of them is
 # what is asserted: the claim is that a *full* queue couples the recipients, not
@@ -25,15 +25,37 @@ extensions:
       # the delivery test's, and two processes cannot share one listener.
       endpoint: 127.0.0.1:34135
 
-  file_storage/coupling_stalled:
-    directory: ${env:OTELBOX_STORAGE_DIR}/coupling_stalled
+  file_storage/coupling_stalled_logs:
+    directory: ${env:OTELBOX_STORAGE_DIR}/coupling_stalled_logs
     create_directory: true
     fsync: true
-    max_size: ${env:OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES:-12884901888}
+    max_size: ${env:OTELBOX_LOGS_STORAGE_MAX_SIZE_BYTES:-12884901888}
     compaction:
       on_start: true
       on_rebound: true
-      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/coupling_stalled
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/coupling_stalled_logs
+      cleanup_on_start: true
+
+  file_storage/coupling_stalled_metrics:
+    directory: ${env:OTELBOX_STORAGE_DIR}/coupling_stalled_metrics
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_METRICS_STORAGE_MAX_SIZE_BYTES:-2147483648}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/coupling_stalled_metrics
+      cleanup_on_start: true
+
+  file_storage/coupling_stalled_traces:
+    directory: ${env:OTELBOX_STORAGE_DIR}/coupling_stalled_traces
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_TRACES_STORAGE_MAX_SIZE_BYTES:-12884901888}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR}/compaction/coupling_stalled_traces
       cleanup_on_start: true
 
 receivers:
@@ -60,17 +82,25 @@ receivers:
                 - 127.0.0.1:1
 
 exporters:
-  otlp_grpc/all_signals:
+  otlp_grpc/logs:
     endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
-    # The backend doubles speak plaintext; production exporters retain secure
-    # defaults.
     tls:
       insecure: true
     sending_queue:
-      # Eight times the other queue: this backend stays up and must never be the
-      # thing that blocks, or a stall could not be attributed to its neighbour.
       queue_size: 16777216
-  otlp_grpc/coupling_stalled:
+  otlp_grpc/metrics:
+    endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
+    tls:
+      insecure: true
+    sending_queue:
+      queue_size: 16777216
+  otlp_grpc/traces:
+    endpoint: ${env:OTELBOX_CI_HEALTHY_ENDPOINT}
+    tls:
+      insecure: true
+    sending_queue:
+      queue_size: 16777216
+  otlp_grpc/coupling_stalled_logs:
     endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
     compression: gzip
     timeout: 10s
@@ -78,11 +108,59 @@ exporters:
       insecure: true
     sending_queue:
       enabled: true
-      storage: file_storage/coupling_stalled
+      storage: file_storage/coupling_stalled_logs
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       # The 512 KiB test records fit. A larger-than-capacity item would block
       # until its request context expires because this is a persistent queue.
+      queue_size: 2097152
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+  otlp_grpc/coupling_stalled_metrics:
+    endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage/coupling_stalled_metrics
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
+      sizer: bytes
+      queue_size: 2097152
+      block_on_overflow: true
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+
+  otlp_grpc/coupling_stalled_traces:
+    endpoint: ${env:OTELBOX_CI_STALLED_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage/coupling_stalled_traces
+      num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
+      sizer: bytes
       queue_size: 2097152
       block_on_overflow: true
       batch:
@@ -103,9 +181,13 @@ service:
     - healthcheckv2
     - bearertokenauth/ingest
     - headers_setter/selected_traces
-    - file_storage/all_signals
+    - file_storage/logs
+    - file_storage/metrics
+    - file_storage/traces
     - file_storage/selected_traces
-    - file_storage/coupling_stalled
+    - file_storage/coupling_stalled_logs
+    - file_storage/coupling_stalled_metrics
+    - file_storage/coupling_stalled_traces
   telemetry:
     metrics:
       readers:
@@ -118,17 +200,17 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+      exporters: [otlp_grpc/traces, otlp_grpc/coupling_stalled_traces]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+      exporters: [otlp_grpc/metrics, otlp_grpc/coupling_stalled_metrics]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+      exporters: [otlp_grpc/logs, otlp_grpc/coupling_stalled_logs]
     # The dead target above prevents self telemetry from changing the fill rate.
     metrics/self:
       receivers: [prometheus/self]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/all_signals, otlp_grpc/coupling_stalled]
+      exporters: [otlp_grpc/metrics, otlp_grpc/coupling_stalled_metrics]

@@ -23,7 +23,7 @@ secrets, services, storage paths and network topology.
 | Pipeline `batch` may precede the persistent exporter. | The processor is not linked; sender batching happens inside the exporter queue after durable enqueue. |
 | Host-agent export may be in memory and time-limited. | It has a persistent byte-sized queue and indefinite transient retry. |
 | Host-agent container statistics may use Docker or Podman sockets. | The reference first cut omits container statistics until a constrained rootless telemetry boundary is defined. |
-| Gateway fan-out may be described as two fixed backends. | Recipients are an explicitly rendered N-element set; each required recipient owns an exporter and WAL. |
+| Gateway fan-out may be described as two fixed backends. | Recipients are an explicitly rendered N-element set; each required recipient owns an exporter and WAL per signal. |
 | Gateway recipients may all use OTLP/gRPC. | The reference also proves a selected-traces OTLP/HTTP recipient with arbitrary headers. |
 
 The old `config/base.yaml` and `config/examples/` files are deliberately absent
@@ -62,8 +62,15 @@ the previous role-prefixed names are:
 | `OTELBOX_HOST_AGENT_JOURNAL_UNIT_1`, `_2` | `OTELBOX_JOURNAL_UNIT_1`, `_2` |
 
 The old fixed backend endpoint inputs have no one-to-one replacement. The
-reference uses `OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT` for its single example;
-deployments render a named exporter and WAL for every actual recipient.
+reference uses `OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT` for one logical
+all-signal recipient represented by `otlp_grpc/{logs,metrics,traces}` and the
+matching storage triplet. Deployments render a uniquely named triplet for every
+actual recipient.
+
+The reference queue/storage budgets are signal-specific:
+`OTELBOX_{LOGS,METRICS,TRACES}_{QUEUE_SIZE,STORAGE_MAX_SIZE}_BYTES`. The generic
+`OTELBOX_RECIPIENT_{QUEUE_SIZE,STORAGE_MAX_SIZE}_BYTES` variables apply only to
+the selected-traces recipient.
 
 The selected-traces recipient additionally requires
 `OTELBOX_SELECTED_TRACES_ENDPOINT`,
@@ -96,8 +103,8 @@ queue was replayed.
 
 1. Update the gateway rendering in `remote_server_setup` first. Collapse its
    ingest receivers, adopt the shared allowlist and canonical names, allocate
-   one WAL directory per required recipient and add the transport, selected
-   routing and header settings required by the real recipients.
+   one WAL directory per required recipient and signal, and add the transport,
+   selected routing and header settings required by the real recipients.
 2. Validate that rendered gateway configuration with the 2.0 binary before
    replacing the running service. Confirm unauthenticated ingest returns 401.
 3. Update the edge installation and launchd rendering in `devbox-setup`. Keep

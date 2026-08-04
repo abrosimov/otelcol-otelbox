@@ -33,11 +33,15 @@ const (
 	// process left behind by the delivery test cannot silently serve it.
 	couplingGatewayHTTPPort    = 34348
 	couplingGatewayMetricsPort = 34899
+	ordinaryGatewayHTTPPort    = 34358
+	ordinaryGatewayMetricsPort = 34909
 
-	healthyBackendEndpoint    = "127.0.0.1:34361"
-	healthyBackendMetricsPort = 34891
-	stalledBackendEndpoint    = "127.0.0.1:34362"
-	stalledBackendMetricsPort = 34892
+	healthyBackendEndpoint     = "127.0.0.1:34361"
+	healthyBackendMetricsPort  = 34891
+	stalledBackendEndpoint     = "127.0.0.1:34362"
+	stalledBackendMetricsPort  = 34892
+	ordinaryBackendEndpoint    = "127.0.0.1:34363"
+	ordinaryBackendMetricsPort = 34893
 )
 
 // Generous rather than tight. TLS startup, persistent queue recovery and the
