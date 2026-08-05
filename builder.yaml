@@ -35,8 +35,12 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.157.0
 
 exporters:
+  # Local adaptations retain WAL-backed data on outbound authentication
+  # failures and retry after a separately configured long interval.
   - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0
+    path: ./internal/exporters/otlpexporter
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.157.0
+    path: ./internal/exporters/otlphttpexporter
   # CI backend double only. Role profiles never use an unaudited local sink.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.157.0
 

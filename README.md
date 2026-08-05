@@ -39,6 +39,7 @@ location are supplied through `${env:...}` references.
 | --- | --- |
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
+| `internal/exporters/` | Pinned OTLP exporter adaptations that retain auth failures and retry after a long interval. |
 | `shared-config-check.sh` | Fails when any marked shared region differs byte for byte. |
 | `smoke-check.sh` | Compares manifest component counts and every declared module with the built binary, then asserts every supported component name. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
@@ -57,6 +58,14 @@ a bounded `file_storage` sending queue and retries transient failures
 indefinitely. Edge and gateway queues block their OTLP callers when full so
 those callers can retry. The host agent cannot back-pressure scrapers; it
 retains an outage up to its WAL capacity and rejects new samples once full.
+
+Outbound authentication failures are graceful degradation, not a drop path.
+gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 retain the accepted
+request and retry every `${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}`. Replacing the
+watched credential file lets the live process drain its queue. Other permanent
+protocol errors still fail permanently so a malformed payload cannot block all
+later data. The transport is at least once: a lost success response can cause a
+duplicate, and exactly-once delivery would require recipient-side idempotency.
 
 Gateway recipient eligibility is part of required delivery. Ordinary signals
 fan out to every rendered gRPC recipient. The reference shows three
@@ -132,7 +141,8 @@ go test -C test/harness . -count=1 -timeout 15m -v \
 It proves:
 
 1. authenticated edge-to-gateway delivery and redaction;
-2. an unknown token is rejected and visible in edge exporter metrics;
+2. an unknown outbound token enters throttled backoff, retains the marker and
+   delivers it after live credential-file rotation without a restart;
 3. a record acknowledged while the gateway is down survives an edge SIGKILL;
 4. selected traces alone reach OTLP/HTTP with required auth/protocol headers and
    survive a gateway SIGKILL in that recipient's WAL;

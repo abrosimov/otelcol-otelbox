@@ -48,19 +48,11 @@
 //     while a trace classified with `otelbox.telemetry.class=llm` additionally
 //     reaches the OTLP/HTTP recipient. That backend accepts only protobuf with
 //     the configured authorisation and protocol headers.
-//  4. The regression above — an edge holding a token that is not in the
-//     gateway's allowlist drops the data AND says so. Both halves are asserted:
-//     the marker must be absent from the sink, and otelcol_exporter_send_failed_*
-//     on the edge's own metrics endpoint must be non-zero. The second half is
-//     what the incident lacked. It is sound because the gateway classifies an
-//     authentication failure as permanent while the edge exporter runs
-//     retry_on_failure.max_elapsed_time: 0s (retry forever on transient errors)
-//     — so a non-zero send_failed means dropped, never merely delayed. It
-//     carries a second precondition of its own, inside the subtest rather than
-//     beside it: a certificate fault satisfies both halves exactly as a
-//     rejected token does, so the assertion first handshakes with the gateway
-//     against the CA the edge was handed and refuses to conclude anything if
-//     the transport is at fault.
+//  4. Authentication degradation — a rejected outbound credential puts the
+//     live edge into a throttled retry loop without delivering or dropping the
+//     accepted marker. Replacing the watched header file with an allowlisted
+//     credential, without restarting either collector, drains that same marker
+//     to the sink.
 //  5. A non-empty allowlist replacement activates the new token and revokes the
 //     previous one, including the final-client revocation operation.
 //

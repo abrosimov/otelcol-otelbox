@@ -230,6 +230,9 @@ exporters:
       initial_interval: 5s
       max_interval: 30s
       max_elapsed_time: 0s
+    retry_on_auth_failure:
+      enabled: true
+      interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
 
 service:
   extensions:

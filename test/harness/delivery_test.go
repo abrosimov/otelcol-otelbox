@@ -113,10 +113,8 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		t.Fatalf("the gateway never accepted a connection: %v", err)
 	}
 
-	// Precondition, not an assertion. Assertion 4 claims that a wrong token
-	// stops delivery; that claim is worthless unless the gateway is checking
-	// tokens at all. Remove `auth:` from the receiver, or the extension from the
-	// config, and this returns 200 and the run fails here — which is the point.
+	// Precondition, not an assertion. Assertion 4 needs a real authentication
+	// outage before it can prove recovery from one.
 	t.Run("precondition: the gateway rejects unauthenticated ingest", func(t *testing.T) {
 		status := gatewayUnauthenticatedStatus(gatewayHTTPPort)
 		if status != http.StatusUnauthorized {
@@ -241,25 +239,19 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}
 	})
 
-	t.Run("assertion 4: an edge with a token outside the gateway's allowlist drops data, visibly", func(t *testing.T) {
+	t.Run("assertion 4: an authentication outage retains data until live credential rotation", func(t *testing.T) {
 		edge.stop(t)
 
-		wrongTokenEdge := startEdge(t, "edge-wrong-token", wrongToken)
+		const edgeName = "edge-wrong-token"
+		authHeaderFile := filepath.Join(state, edgeName+"-auth-header")
+		wrongTokenEdge := startEdge(t, edgeName, wrongToken)
 		if err := poll(readyTimeout, wrongTokenEdge, "the edge's health endpoint", edgeHealthy); err != nil {
 			t.Fatalf("the edge never became healthy on the second run: %v", err)
 		}
-		// Health is green here and stays green for the rest of the run. That is
-		// the incident in one line: the endpoint launchd and every dashboard
-		// watched answered 200 the entire time telemetry was being dropped.
+		pid := wrongTokenEdge.cmd.Process.Pid
 
-		// This assertion's own precondition, inside rather than beside it: a
-		// sibling subtest could only make the run red, not stop this one
-		// reporting a certificate fault as a rejected token. A bad SAN, an
-		// expired leaf or a CA mismatch satisfies both halves below exactly as
-		// an unlisted token does, so the transport has to be known good — and
-		// known good here, at the moment the export is attempted.
 		if err := chain.verifyServed(gatewayEndpoint); err != nil {
-			t.Fatalf("the gateway's certificate does not verify against the CA the edge was handed, so a dropped record below would be a TLS fault and this assertion would say nothing about the allowlist: %v", err)
+			t.Fatalf("the gateway's certificate does not verify against the CA the edge was handed, so the outage cannot be attributed to authentication: %v", err)
 		}
 
 		if !sendOrFail(t, "assertion 4", edgeHTTPPort,
@@ -267,37 +259,29 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			return
 		}
 
-		if err := poll(failureTimeout, wrongTokenEdge, "otelcol_exporter_send_failed_* to go non-zero on the edge", func() bool {
-			return exporterReportsFailure(edgeMetricsPort)
+		if err := poll(failureTimeout, wrongTokenEdge, "the exporter to enter authentication backoff", func() bool {
+			return wrongTokenEdge.firstLogLine("will retry the request after interval") != ""
 		}); err != nil {
-			// The failure mode worth naming: send_failed stuck at zero means
-			// either the export succeeded (the token check is gone) or nothing
-			// was ever attempted. Both make the negative case vacuous, which is
-			// worse than a red build.
-			t.Errorf("otelcol_exporter_send_failed_* stayed at zero on port %d. Either the gateway accepted a token that is not in its allowlist, or the edge never attempted the export — in both cases the drop this test exists to catch would be invisible again: %v",
-				edgeMetricsPort, err)
-			if sinkContains(t, sink, unauthorisedMarker) {
-				t.Errorf("and marker %s did reach the sink — the gateway accepted an unknown token", unauthorisedMarker)
-			}
-			return
+			t.Fatalf("the exporter did not enter retry backoff after the gateway rejected its credential: %v", err)
 		}
 
-		// Ordered deliberately: only once the exporter has recorded a permanent
-		// failure is "absent from the sink" a decided fact rather than a record
-		// still in flight.
-		if sinkContains(t, sink, unauthorisedMarker) {
-			t.Fatalf("marker %s reached %s despite the edge holding a token outside the gateway's allowlist — bearertokenauth/ingest is not rejecting it",
-				unauthorisedMarker, sink)
+		if err := staysFalse(time.Second, wrongTokenEdge, "the gateway accepted the rejected credential", func() bool {
+			return sinkContains(t, sink, unauthorisedMarker)
+		}); err != nil {
+			t.Fatalf("marker %s reached the sink before credential rotation: %v", unauthorisedMarker, err)
+		}
+		if line := wrongTokenEdge.firstLogLine("dropping data"); line != "" {
+			t.Fatalf("the exporter dropped the retained marker during authentication backoff:\n%s", line)
 		}
 
-		t.Logf("the drop is visible in the edge's own metrics:\n%s",
-			exporterMetrics(edgeMetricsPort, "otelcol_exporter_send_failed"))
-		// Supporting evidence only. The wording of the upstream error is not a
-		// contract, so a change to it must not fail the build — but when it is
-		// there it is the exact string from the incident, and logging it makes
-		// the CI output self-explanatory.
-		if line := wrongTokenEdge.firstLogLine("unauthenticated", "does not match expected scheme or token"); line != "" {
-			t.Logf("the edge log carries the incident's error, as expected:\n%s", line)
+		writeAuthHeaderFile(t, authHeaderFile, validToken)
+		if err := poll(deliveryTimeout, wrongTokenEdge, "the retained marker to drain after credential rotation", func() bool {
+			return sinkContains(t, sink, unauthorisedMarker)
+		}); err != nil {
+			t.Fatalf("marker %s was not delivered after live credential rotation: %v", unauthorisedMarker, err)
+		}
+		if !wrongTokenEdge.alive() || wrongTokenEdge.cmd.Process.Pid != pid {
+			t.Fatalf("credential recovery restarted the edge; expected the original live process %d", pid)
 		}
 	})
 

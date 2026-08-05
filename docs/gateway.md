@@ -63,6 +63,7 @@ Reference defaults apply only when a variable is absent:
 | `OTELBOX_MEMORY_LIMIT_PERCENTAGE` | 75 | Hard heap-pressure threshold relative to the cgroup limit. |
 | `OTELBOX_MEMORY_SPIKE_LIMIT_PERCENTAGE` | 15 | Spike allowance subtracted from the hard threshold. |
 | `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent workers per exporter and signal. |
+| `OTELBOX_AUTH_RETRY_INTERVAL` | `1h` | Probe interval while a recipient rejects an outbound credential. |
 | `OTELBOX_LOGS_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Log WAL for the reference all-signal recipient. |
 | `OTELBOX_LOGS_QUEUE_SIZE_BYTES` | 8 GiB | Log queue for the reference all-signal recipient. |
 | `OTELBOX_METRICS_STORAGE_MAX_SIZE_BYTES` | 2 GiB | Metrics WAL for the reference all-signal recipient. |
@@ -131,6 +132,12 @@ and rejects the previous one.
 Inbound TLS termination belongs to the deployment. A bearer token must never
 cross an unencrypted network. All outbound exporters retain secure defaults;
 deliberate private plaintext must be stated in the rendered configuration.
+
+Outbound gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses
+retain the affected request in its recipient WAL and retry at
+`OTELBOX_AUTH_RETRY_INTERVAL`. Replacing a watched outbound header file takes
+effect without restarting the gateway. This is at-least-once delivery: a lost
+success response may produce a duplicate at the recipient.
 
 ## Required delivery and coupling
 

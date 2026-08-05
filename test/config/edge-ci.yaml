@@ -53,6 +53,10 @@ receivers:
 
 exporters:
   otlp_grpc/gateway:
+    # Keep the production behaviour but compress its one-hour probe interval so
+    # the live credential-rotation assertion completes in CI.
+    retry_on_auth_failure:
+      interval: 200ms
     tls:
       # The role profile's `insecure: false` is inherited, not overridden: this
       # leg carries a bearer credential and its production setting is the one

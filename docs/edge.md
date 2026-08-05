@@ -25,6 +25,7 @@ Reference variables have safe absent-variable defaults:
 | `OTELBOX_MEMORY_LIMIT_MIB` | 400 MiB | Fixed hard threshold for the workstation process. |
 | `OTELBOX_MEMORY_SPIKE_LIMIT_MIB` | 80 MiB | Spike allowance below the hard threshold. |
 | `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent outbound workers. |
+| `OTELBOX_AUTH_RETRY_INTERVAL` | `1h` | Probe interval while the gateway rejects the outbound credential. |
 | `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 6 GiB | Per signal file; 1.5 times the queue capacity. |
 | `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Must exceed the 1 MiB accepted-request envelope and fit within storage capacity. |
 
@@ -61,6 +62,12 @@ does not choose a CA path because trust-store ownership is deployment-specific.
 The CI overlay supplies a per-run CA and verifies the gateway leaf; it never
 turns verification off.
 
+If the gateway rejects the credential, the exporter retains the accepted data
+and retries at `OTELBOX_AUTH_RETRY_INTERVAL`. Replace the header file in place;
+`headers_setter/gateway` supplies the new value to a later attempt without a
+Collector restart. The interval is deliberately much longer than the ordinary
+5–30 second transient backoff.
+
 ## Durability
 
 The exporter queue writes through `file_storage/gateway`, uses byte-based
@@ -91,8 +98,9 @@ OTELBOX_UPSTREAM_AUTH_HEADER_FILE=/tmp/otelbox-edge-auth-header \
   otelcol-otelbox validate --config config/edge.yaml
 ```
 
-Treat `/status` as startup health only. Delivery monitoring must include
-`otelcol_exporter_send_failed_*`, `otelcol_exporter_enqueue_failed_*` and queue
-size/capacity metrics from port 8888. A wrong gateway token leaves the process
-and health endpoint green; the end-to-end harness exists because that failure
-previously caused silent loss.
+Treat `/status` as startup health only. Delivery monitoring must include queue
+size/capacity, enqueue failures and the local Collector log. Authentication
+backoff logs `Exporting failed. Will retry the request after interval`; the
+process and health endpoint deliberately remain green while the WAL retains
+the outage. The end-to-end harness proves live credential recovery because
+liveness alone cannot.

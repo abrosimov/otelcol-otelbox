@@ -1,0 +1,23 @@
+description: Config defines configuration for OTLP exporter.
+type: object
+properties:
+  retry_on_auth_failure:
+    $ref: '#/$defs/auth_retry_config'
+  retry_on_failure:
+    $ref: /config/configretry.back_off_config
+  sending_queue:
+    x-optional: true
+    $ref: /exporter/exporterhelper.queue_batch_config
+allOf:
+  - $ref: /exporter/exporterhelper.timeout_config
+  - $ref: /config/configgrpc.client_config
+$defs:
+  auth_retry_config:
+    description: AuthRetryConfig controls retrying authentication failures without changing the treatment of other permanent OTLP errors.
+    type: object
+    properties:
+      enabled:
+        type: boolean
+      interval:
+        type: string
+        format: duration

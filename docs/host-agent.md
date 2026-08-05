@@ -26,6 +26,7 @@ shell and cannot run this receiver.
 Reference defaults are `OTELBOX_BIND_HOST=127.0.0.1`,
 `OTELBOX_HEALTH_ENDPOINT=127.0.0.1:14324`, `OTELBOX_MEMORY_LIMIT_MIB=400`,
 `OTELBOX_MEMORY_SPIKE_LIMIT_MIB=80`, `OTELBOX_EXPORTER_CONSUMERS=2`,
+`OTELBOX_AUTH_RETRY_INTERVAL=1h`,
 `OTELBOX_STORAGE_MAX_SIZE_BYTES=6442450944` and
 `OTELBOX_QUEUE_SIZE_BYTES=4294967296`. The role exports metrics and logs, so
 reserve both signal files, compaction headroom and the independent journald
@@ -73,11 +74,13 @@ deliberately plaintext must state `tls.insecure: true` in its rendered profile;
 this repository does not infer that from co-location.
 
 The outbound queue persists through `file_storage/gateway`, batches after
-enqueue and retries transient failure indefinitely. Unlike edge and gateway,
-it does not block when full. Scrape receivers cannot be back-pressured: waiting
-would merely miss every collection cycle during the wait. The WAL therefore
-retains a bounded outage and rejects new samples at capacity. Monitor capacity
-well before that boundary.
+enqueue and retries transient failure indefinitely. Authentication rejection
+retains the request and probes again at `OTELBOX_AUTH_RETRY_INTERVAL`; replacing
+the watched header file recovers without a process restart. Unlike edge and
+gateway, it does not block when full. Scrape receivers cannot be back-pressured:
+waiting would merely miss every collection cycle during the wait. The WAL
+therefore retains a bounded outage and rejects new samples at capacity. Monitor
+capacity well before that boundary.
 
 The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope.
 

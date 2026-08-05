@@ -25,14 +25,17 @@ formula and release assets all use `otelcol-otelbox`. Bare `otelbox` names the
 wider telemetry estate, except for the historical Homebrew tap label:
 `brew install abrosimov/otelbox/otelcol-otelbox`.
 
-The artefact has no handwritten Go source. `test/harness/` is a separate,
-stdlib-only Go module that drives the built binary from outside.
+`internal/exporters/` contains narrow adaptations of the pinned upstream OTLP
+gRPC and HTTP exporters. They retain authentication failures instead of
+classifying them as permanent. `test/harness/` remains a separate, stdlib-only
+Go module that drives the built binary from outside.
 
 ## Map
 
 | Path | Purpose |
 | --- | --- |
 | `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. |
+| `internal/exporters/` | Pinned upstream OTLP exporters with the auth-retry adaptation and unit tests. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `shared-config-check.sh` | Byte-compares every marked shared region. |
 | `smoke-check.sh` | Checks component counts, all declared modules and all supported component names against a built binary. |
@@ -144,6 +147,18 @@ edge-to-gateway leg; backend doubles explicitly opt into plaintext.
 Changing either authenticator, file format, header, receiver `auth:` block or
 TLS overlay requires the full harness. A process and `/status` can remain green
 while every export is rejected.
+
+Every outbound exporter enables `retry_on_auth_failure`. gRPC
+`Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses retain the
+request and retry after `${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}`. This interval
+is separate from the 5–30 second transient backoff. The watched credential file
+is read again before a later attempt, so replacing it can drain the queue
+without restarting the Collector. Other permanent errors remain permanent so
+an invalid payload cannot pin a queue forever.
+
+Delivery is at least once. If a recipient accepts a request but its success
+response is lost, retry can duplicate it; exactly-once delivery requires a
+recipient-side idempotency contract that this transport does not own.
 
 ## Redaction boundary
 
@@ -267,9 +282,9 @@ Supply every required role environment value for `validate`. Run host-agent
 validation on Linux because the journald receiver rejects other operating
 systems during component construction. Validation does not start receivers or
 exporters. The full harness proves edge/gateway delivery, redaction,
-authentication failure visibility, selected-trace routing and headers,
-persistence across SIGKILL, token replacement and recipient coupling under
-pressure; it does not exercise host-agent collection.
+authentication backoff and live credential recovery, selected-trace routing
+and headers, persistence across SIGKILL, token replacement and recipient
+coupling under pressure; it does not exercise host-agent collection.
 
 `resource_detection`'s system detector and every `host_metrics` scraper read
 boot time during startup. A command sandbox may deny that read and report

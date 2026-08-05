@@ -31,6 +31,7 @@ on:
       - Dockerfile
       - .dockerignore
       - config/**
+      - internal/exporters/**
       - test/**
       - Formula/**
       - renovate.json5
@@ -43,6 +44,7 @@ on:
       - Dockerfile
       - .dockerignore
       - config/**
+      - internal/exporters/**
       - test/**
       - Formula/**
       - renovate.json5
@@ -126,6 +128,15 @@ jobs:
             echo "  wrong and needs replacing — the pins are not." >&2
             exit 1
           fi
+
+          for adaptation in otlpexporter otlphttpexporter; do
+            adaptation_pin="$(tr -d '[:space:]' < "internal/exporters/${adaptation}/UPSTREAM_VERSION")"
+            if [ "$adaptation_pin" != "$upstream_pin" ]; then
+              echo "internal/exporters/${adaptation} is based on ${adaptation_pin:-<missing>}, not $upstream_pin" >&2
+              echo "refresh and reapply the auth-retry adaptation before updating Collector" >&2
+              exit 1
+            fi
+          done
 
           # GHCR package names must be lowercase; the owner login need not be.
           owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
@@ -238,6 +249,19 @@ jobs:
             exit 1
           fi
           go vet ./...
+
+      - name: Check the local exporter adaptations
+        run: |
+          for module in internal/exporters/otlpexporter internal/exporters/otlphttpexporter; do
+            unformatted="$(gofmt -l "$module")"
+            if [ -n "$unformatted" ]; then
+              echo "Go files need gofmt:" >&2
+              printf '%s\n' "$unformatted" >&2
+              exit 1
+            fi
+            go test -C "$module" ./...
+            go vet -C "$module" ./...
+          done
 
       - name: Check Docker, Formula, Renovate and YAML sources
         env:
@@ -775,8 +799,8 @@ jobs:
           - independent edge and gateway runs stripped the configured credential
             corpus from logs, traces and metrics without changing representative
             ordinary values; the selected-traces path was included;
-          - a wrong ingestion token failed loudly in the edge's own metrics
-            rather than dropping telemetry in silence;
+          - a rejected outbound credential retained the marker in throttled
+            backoff and delivered it after live credential-file rotation;
           - a record acknowledged by the edge while the gateway was unavailable
             survived a forced edge process termination and was delivered after
             both processes returned;
