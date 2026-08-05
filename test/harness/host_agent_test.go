@@ -26,9 +26,10 @@ func TestHostAgentStartsOnLinux(t *testing.T) {
 			"OTELBOX_JOURNAL_UNIT_1":            "systemd-journald.service",
 			"OTELBOX_JOURNAL_UNIT_2":            "cron.service",
 			"OTELBOX_AUTH_RETRY_INTERVAL":       "200ms",
-			"OTELBOX_STORAGE_MAX_SIZE_BYTES":    "67108864",
-			"OTELBOX_QUEUE_SIZE_BYTES":          "33554432",
-			"OTELBOX_EXPORTER_CONSUMERS":        "1",
+			// file_storage rejects caps below its 100 MiB rebound threshold.
+			"OTELBOX_STORAGE_MAX_SIZE_BYTES": "134217728",
+			"OTELBOX_QUEUE_SIZE_BYTES":       "33554432",
+			"OTELBOX_EXPORTER_CONSUMERS":     "1",
 		},
 		configs: []string{
 			configPath("config", "host-agent.yaml"),
