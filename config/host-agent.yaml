@@ -79,8 +79,8 @@ receivers:
   host_metrics:
     collection_interval: 30s
     scrapers:
-      # v0.157.0 made the per-core `cpu` attribute on `system.cpu.time` opt-in,
-      # and it is deliberately not re-enabled: aggregate CPU time by state is
+      # v0.157.0 made the per-core `cpu` attribute on `system.cpu.time` opt-in;
+      # it is deliberately not re-enabled: aggregate CPU time by state is
       # what this host is asked, at a fraction of the series count.
       cpu:
       disk:

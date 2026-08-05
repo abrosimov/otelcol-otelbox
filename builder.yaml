@@ -10,45 +10,45 @@ dist:
     every outbound leg, in the workstation edge, server gateway and server
     host-agent roles.
   output_path: ./_build
-  # Unquoted: CI reads this with awk, not YAML, and would keep the quotes.
-  version: 2.0.0
+  # Unquoted: the Go manifest resolver requires one stable semantic version.
+  version: 2.1.0
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.157.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0
   # All three roles scrape their own endpoint through this, so operational
   # metrics take the same durable, queued path as everything else.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.158.0
   # Linux-only, and it execs the `journalctl` binary rather than reading the
   # journal itself — so only the host-agent role can wire it, never the
   # `FROM scratch` gateway image, which has no binary to exec.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/journaldreceiver v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/journaldreceiver v0.158.0
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.157.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.158.0
   # Deliberately no batchprocessor: it acknowledges into an in-memory channel
   # before the persistent exporter queue and can therefore violate the WAL
   # boundary. Every role batches inside `sending_queue` after durable enqueue.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.158.0
   # Selects the trace subset that has an additional required recipient.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.158.0
 
 exporters:
-  # Local adaptations retain WAL-backed data on outbound authentication
-  # failures and retry after a separately configured long interval.
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0
-    path: ./internal/exporters/otlpexporter
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.157.0
-    path: ./internal/exporters/otlphttpexporter
+  # Thin wrappers put the persistent queue around standard upstream exporters,
+  # then reclassify only authentication rejection for the outer retry sender.
+  - gomod: github.com/abrosimov/otelcol-otelbox/exporter/otlpauthretry v0.158.0
+    path: ./internal/exporters/otlpauthretry
+  - gomod: github.com/abrosimov/otelcol-otelbox/exporter/otlphttpauthretry v0.158.0
+    path: ./internal/exporters/otlphttpauthretry
   # CI backend double only. Role profiles never use an unaudited local sink.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.158.0
 
 extensions:
   # The only health check, wired by all three roles. Development stability where
   # v1 was alpha, taken deliberately: one answer for every role was worth more
   # than the maturity label, and keeping v1 beside it would have kept the split.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.158.0

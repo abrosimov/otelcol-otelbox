@@ -120,7 +120,7 @@ until its context expires.
 
 The ingest allowlist contract is one URL-safe bare token per line, with no
 whitespace or comments. Give every client a distinct token. Although pinned
-v0.157 ignores text after the first whitespace, relying on that parser quirk
+v0.158 ignores text after the first whitespace, relying on that parser quirk
 makes file audits ambiguous.
 
 An empty-file reload is rejected and the previous tokens remain active. Rotate

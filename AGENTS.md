@@ -25,20 +25,20 @@ formula and release assets all use `otelcol-otelbox`. Bare `otelbox` names the
 wider telemetry estate, except for the historical Homebrew tap label:
 `brew install abrosimov/otelbox/otelcol-otelbox`.
 
-`internal/exporters/` contains narrow adaptations of the pinned upstream OTLP
-gRPC and HTTP exporters. They retain authentication failures instead of
-classifying them as permanent. `test/harness/` remains a separate, stdlib-only
-Go module that drives the built binary from outside.
+`internal/exporters/` contains thin wrappers around the pinned standard OTLP
+gRPC and HTTP exporters. The wrappers own the persistent queue and retry sender,
+disable those layers in the inner exporter and reclassify only authentication
+failures. `test/harness/` remains a separate, stdlib-only Go module that drives
+the built binary from outside.
 
 ## Map
 
 | Path | Purpose |
 | --- | --- |
 | `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. |
-| `internal/exporters/` | Pinned upstream OTLP exporters with the auth-retry adaptation and unit tests. |
+| `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
-| `shared-config-check.sh` | Byte-compares every marked shared region. |
-| `smoke-check.sh` | Checks component counts, all declared modules and all supported component names against a built binary. |
+| `tools/ci/` | Tested Go checks for shared regions and built-binary contents. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
@@ -61,8 +61,8 @@ otelcol-otelbox --config config/<role>.yaml
 
 There is no base layer and no `config/examples/` compatibility surface. Blocks
 between `# >>> SHARED` and `# <<< SHARED` are intended to be one text in all
-three profiles, comments included. Edit every copy and run
-`./shared-config-check.sh`.
+three profiles, comments included. Edit every copy and run the Go shared-region
+check from the verification section.
 
 Profiles demonstrate a contract; they are not mirrors of a current deployment.
 Values naming a bind address, neighbour, credential file, storage root or disk
@@ -102,9 +102,9 @@ The host agent sets it to `false`: scrapers cannot be back-pressured, so blockin
 would lose subsequent collection cycles while retaining the current item. Its
 WAL protects a bounded outage and the deployment must alert before capacity.
 
-Do not put the `batch` processor in a role pipeline. In upstream v0.157 it sends
-into an internal channel and returns success; a later downstream failure is
-logged rather than returned. Placing it before a persistent exporter therefore
+Do not put the `batch` processor in a role pipeline. In the pinned upstream, it
+sends into an internal channel and returns success; a later downstream failure
+is logged rather than returned. Placing it before a persistent exporter therefore
 allows a receiver to acknowledge data held only in memory. Sender batching
 belongs inside `sending_queue.batch`, after persistent enqueue. The batch
 processor is deliberately not linked, so returning it to a rendered role fails
@@ -175,7 +175,8 @@ must source-sanitise unstructured text and must not place secrets in uncovered
 carriers. `summary: info` supplies record-local masked counts, never key names;
 it is evidence that a rule fired, not proof that no secret escaped. The harness
 attributes edge and gateway redaction independently across logs, traces and
-metrics, but host-agent collection remains a deployment-side Linux smoke.
+metrics. On Linux it also proves generic host-agent startup, but target-host
+collection remains deployment acceptance evidence.
 
 Changing key/value patterns, summary behaviour or processor placement requires
 the shared check and full harness. Every new value pattern needs a positive leak
@@ -225,7 +226,7 @@ such as `api`.
 
 ## Component names
 
-Use canonical v0.157 component types. In current profiles these include
+Use canonical v0.158 component types. In current profiles these include
 `otlp_grpc` and `otlp_http` for exporters, `resource_detection`, `host_metrics`,
 `filter`, `file_storage`, `healthcheckv2`, `headers_setter`,
 `bearertokenauth`, `prometheus` and `journald`. The OTLP receiver remains
@@ -268,11 +269,13 @@ playbook-owned binary and launchd agent, not Homebrew.
 
 ## Verification
 
-Build with OCB v0.157.0 and Go 1.25.12, then run:
+Build with OCB v0.158.0 and Go 1.25.12, then run:
 
 ```console
-./smoke-check.sh ./_build/otelcol-otelbox builder.yaml
-./shared-config-check.sh
+go -C tools/ci run ./cmd/otelbox-ci binary check \
+  --binary ../../_build/otelcol-otelbox --manifest ../../builder.yaml
+go -C tools/ci run ./cmd/otelbox-ci shared check \
+  ../../config/edge.yaml ../../config/gateway.yaml ../../config/host-agent.yaml
 ./_build/otelcol-otelbox validate --config config/<role>.yaml
 go test -C test/harness . -count=1 -timeout 15m -v \
   -args -otelcol-binary "$PWD/_build/otelcol-otelbox"
@@ -284,7 +287,9 @@ systems during component construction. Validation does not start receivers or
 exporters. The full harness proves edge/gateway delivery, redaction,
 authentication backoff and live credential recovery, selected-trace routing
 and headers, persistence across SIGKILL, token replacement and recipient
-coupling under pressure; it does not exercise host-agent collection.
+coupling under pressure. On Linux it also starts the complete host-agent profile
+and requires health and self metrics; target-host permissions and collection
+remain deployment acceptance evidence.
 
 `resource_detection`'s system detector and every `host_metrics` scraper read
 boot time during startup. A command sandbox may deny that read and report

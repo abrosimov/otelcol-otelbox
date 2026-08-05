@@ -35,6 +35,8 @@ const (
 	couplingGatewayMetricsPort = 34899
 	ordinaryGatewayHTTPPort    = 34358
 	ordinaryGatewayMetricsPort = 34909
+	hostAgentHealthPort        = 34134
+	hostAgentMetricsPort       = 34910
 
 	healthyBackendEndpoint     = "127.0.0.1:34361"
 	healthyBackendMetricsPort  = 34891
@@ -121,7 +123,7 @@ func resolveRepoRoot() error {
 	if err != nil {
 		return fmt.Errorf("resolving the repository root: %w", err)
 	}
-	for _, role := range []string{"edge.yaml", "gateway.yaml"} {
+	for _, role := range []string{"edge.yaml", "gateway.yaml", "host-agent.yaml"} {
 		profile := filepath.Join(root, "config", role)
 		if _, err := os.Stat(profile); err != nil {
 			return fmt.Errorf("expected the %s role profile at %s: %w", role, profile, err)

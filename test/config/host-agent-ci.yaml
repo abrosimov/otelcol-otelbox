@@ -1,0 +1,35 @@
+# otelbox — HOST-AGENT ROLE, CI OVERLAY. Loaded second by the Linux startup
+# smoke. It moves listeners away from supported role ports and shortens no
+# collection interval; the test proves component startup rather than sample
+# delivery.
+
+extensions:
+  healthcheckv2:
+    http:
+      endpoint: 127.0.0.1:34134
+
+receivers:
+  prometheus/host:
+    config:
+      scrape_configs:
+        - job_name: host-neighbours
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - ${env:OTELBOX_SCRAPE_TARGET_1}
+                - ${env:OTELBOX_SCRAPE_TARGET_2}
+        - job_name: otelcol-otelbox-host-agent
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 127.0.0.1:34910
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 34910

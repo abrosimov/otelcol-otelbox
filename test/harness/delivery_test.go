@@ -297,7 +297,7 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 			t.Fatalf("the old token stayed active or its replacement never became active: %v", err)
 		}
 
-		// Pinned v0.157 keeps the previous value on an empty-file reload. A random
+		// Pinned v0.158 keeps the previous value on an empty-file reload. A random
 		// non-client token is the explicit last-token revocation operation.
 		revocationToken := "otelbox-ci-revoked-" + randomHex(t, 16)
 		writeTokenFile(t, tokenFile, revocationToken)

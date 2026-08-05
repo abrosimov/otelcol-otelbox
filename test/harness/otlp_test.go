@@ -408,7 +408,11 @@ func endpointAccepts(endpoint string) bool {
 // registers `/` on an http.ServeMux, which subtree-matches `/status`. So this
 // proves the health endpoint is up, not that it is the v2 responder.
 func edgeHealthy() bool {
-	response, err := probeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/status", edgeHealthPort))
+	return healthEndpointReady(edgeHealthPort)
+}
+
+func healthEndpointReady(port int) bool {
+	response, err := probeClient.Get(fmt.Sprintf("http://127.0.0.1:%d/status", port))
 	if err != nil {
 		return false
 	}

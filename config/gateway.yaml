@@ -276,7 +276,7 @@ exporters:
       enabled: true
       interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
 
-  # `otlp_http` is the canonical v0.157 type. The endpoint is an OTLP base URL;
+  # `otlp_http` is the canonical v0.158 type. The endpoint is an OTLP base URL;
   # the exporter appends `/v1/traces`. Protocol headers and credentials are
   # deployment data supplied through the generic extension above.
   otlp_http/selected_traces:

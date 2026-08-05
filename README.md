@@ -9,8 +9,10 @@ three self-contained role profiles:
 | `gateway` | Authenticated OTLP and its own metrics | N explicitly rendered required recipients, each with its own WAL |
 | `host-agent` | Host metrics, selected journal units, neighbouring Prometheus targets and the collector's own metrics | One authenticated gateway |
 
-Version 2.0 removes the old base-plus-role configuration model. A process loads
-exactly one file:
+Version 2.1 retains the self-contained configuration model introduced in 2.0
+and replaces copied upstream exporters and repository-owned Bash checks with
+thin exporter wrappers and a tested Go contract tool. A process loads exactly
+one file:
 
 ```console
 otelcol-otelbox --config config/edge.yaml
@@ -39,9 +41,8 @@ location are supplied through `${env:...}` references.
 | --- | --- |
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
-| `internal/exporters/` | Pinned OTLP exporter adaptations that retain auth failures and retry after a long interval. |
-| `shared-config-check.sh` | Fails when any marked shared region differs byte for byte. |
-| `smoke-check.sh` | Compares manifest component counts and every declared module with the built binary, then asserts every supported component name. |
+| `internal/exporters/` | Thin OTLP exporter wrappers that retain auth failures and retry after a long interval. |
+| `tools/ci/` | Tested Go contract checks for shared profile regions and built-binary contents. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
 | `test/config/` | CI-only overlays and backend doubles used by the harness. |
 | `Dockerfile` | Packages the already-built Linux binary in `scratch`; it never compiles. |
@@ -104,18 +105,21 @@ Required string and path variables are documented in the role guides:
 - [Host agent](docs/host-agent.md)
 - [Credential redaction boundary](docs/redaction.md)
 - [Adopting 2.0](docs/adoption.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Build and verify locally
 
-The manifest pins upstream Collector `v0.157.0`. CI pins Go `1.25.12` because
+The manifest pins upstream Collector `v0.158.0`. CI pins Go `1.25.12` because
 the initial Go 1.25 release mislinks this generated collector while the patched
 toolchain builds it successfully.
 
 ```console
-go install go.opentelemetry.io/collector/cmd/builder@v0.157.0
+go install go.opentelemetry.io/collector/cmd/builder@v0.158.0
 CGO_ENABLED=0 "$(go env GOPATH)/bin/builder" --config builder.yaml
-./smoke-check.sh ./_build/otelcol-otelbox builder.yaml
-./shared-config-check.sh
+go -C tools/ci run ./cmd/otelbox-ci binary check \
+  --binary ../../_build/otelcol-otelbox --manifest ../../builder.yaml
+go -C tools/ci run ./cmd/otelbox-ci shared check \
+  ../../config/edge.yaml ../../config/gateway.yaml ../../config/host-agent.yaml
 ```
 
 Validate a profile with all of its required string values supplied. Validation
@@ -151,11 +155,14 @@ It proves:
 6. gateway fan-out leaves ingest unaffected only while every required recipient
    queue has headroom; a full log queue backpressures log ingest without blocking
    the separate metrics and traces queues;
-7. non-empty allowlist replacement revokes the previous bearer token.
+7. non-empty allowlist replacement revokes the previous bearer token;
+8. on Linux, the complete host-agent profile starts with `journald`, host
+   metrics and self telemetry, and publishes health and process metrics.
 
-The black-box harness starts the `edge` and `gateway` roles. It does not execute
-the Linux-only host-agent receivers; validate and smoke that role on the target
-host as described in its guide.
+The black-box harness starts the `edge` and `gateway` roles on every supported
+test host and also starts the host-agent role on Linux. The generic Linux smoke
+does not replace acceptance on the intended target host and service account;
+that boundary is described in the host-agent guide.
 
 ## Release flow
 

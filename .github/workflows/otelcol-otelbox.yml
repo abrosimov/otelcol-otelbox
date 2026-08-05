@@ -1,8 +1,8 @@
 name: otelcol-otelbox
 
 # Build, prove and publish the OCB collector for all three roles. Which target
-# a role runs on is a deployment's business; the matrix exists because
-# smoke-check.sh executes the binary, so each target has to build natively.
+# a role runs on is a deployment's business. The contract tool executes the
+# binary, so each target has to build natively.
 #
 # `dist.version` in builder.yaml is the single source of truth: bump it, merge,
 # and this run publishes `v<version>` — there is no tag trigger, so a hand-cut
@@ -26,8 +26,7 @@ on:
     # Documentation is absent on purpose: it cannot break a build.
     paths:
       - builder.yaml
-      - smoke-check.sh
-      - shared-config-check.sh
+      - tools/ci/**
       - Dockerfile
       - .dockerignore
       - config/**
@@ -39,8 +38,7 @@ on:
   pull_request:
     paths:
       - builder.yaml
-      - smoke-check.sh
-      - shared-config-check.sh
+      - tools/ci/**
       - Dockerfile
       - .dockerignore
       - config/**
@@ -76,67 +74,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.12"
+          cache: false
+
       - name: Resolve version from builder.yaml and decide whether to publish
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          version_lines="$(grep -E '^  version:' builder.yaml || true)"
-          if [ "$(printf '%s\n' "$version_lines" | awk 'NF { count++ } END { print count + 0 }')" -ne 1 ]; then
-            echo "builder.yaml must contain exactly one dist.version line" >&2
-            exit 1
-          fi
-          version="$(printf '%s\n' "$version_lines" | awk 'NF == 2 { print $2 }')"
-          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "dist.version must be an unquoted stable semantic version, got '${version:-<unreadable>}'" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-          # OCB must match the core modules it compiles, so the toolchain
-          # version comes from the otlpreceiver pin and never from dist.version,
-          # which describes this artefact alone.
-          upstream_pins="$(awk '
-            $1 == "-" && $2 == "gomod:" &&
-            $3 == "go.opentelemetry.io/collector/receiver/otlpreceiver" { print $4 }
-          ' builder.yaml)"
-          if [ "$(printf '%s\n' "$upstream_pins" | awk 'NF { count++ } END { print count + 0 }')" -ne 1 ]; then
-            echo "builder.yaml must contain exactly one otlpreceiver gomod pin" >&2
-            exit 1
-          fi
-          upstream_pin="$upstream_pins"
-          if ! [[ "$upstream_pin" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "otlpreceiver pin must be a stable semantic version prefixed with v, got '$upstream_pin'" >&2
-            exit 1
-          fi
-          upstream_version="${upstream_pin#v}"
-          echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
-
-          # An upstream bump rewrites every pin by hand, and a line left behind
-          # compiles perfectly into a collector assembled from two releases that
-          # nothing downstream would notice.
-          disagreeing="$(awk -v pin="$upstream_pin" '
-            $1 == "-" && $2 == "gomod:" && $4 != pin { print NR ":" $0 }
-          ' builder.yaml)"
-          if [ -n "$disagreeing" ]; then
-            echo "builder.yaml mixes upstream versions — these pins are not at ${upstream_pin}," >&2
-            echo "which is what otlpreceiver says and what OCB will be installed at:" >&2
-            printf '%s\n' "$disagreeing" >&2
-            echo "  bring every pin to one version. If upstream has genuinely stopped" >&2
-            echo "  releasing its modules in lockstep, this guard is the thing that is" >&2
-            echo "  wrong and needs replacing — the pins are not." >&2
-            exit 1
-          fi
-
-          for adaptation in otlpexporter otlphttpexporter; do
-            adaptation_pin="$(tr -d '[:space:]' < "internal/exporters/${adaptation}/UPSTREAM_VERSION")"
-            if [ "$adaptation_pin" != "$upstream_pin" ]; then
-              echo "internal/exporters/${adaptation} is based on ${adaptation_pin:-<missing>}, not $upstream_pin" >&2
-              echo "refresh and reapply the auth-retry adaptation before updating Collector" >&2
-              exit 1
-            fi
-          done
+          manifest_resolution="$(go -C tools/ci run ./cmd/otelbox-ci manifest resolve \
+            --manifest ../../builder.yaml \
+            --adaptation-version ../../internal/exporters/otlpauthretry/UPSTREAM_VERSION \
+            --adaptation-version ../../internal/exporters/otlphttpauthretry/UPSTREAM_VERSION \
+            --adaptation-module ../../internal/exporters/otlpauthretry/go.mod \
+            --adaptation-module ../../internal/exporters/otlphttpauthretry/go.mod)"
+          printf '%s\n' "$manifest_resolution" >> "$GITHUB_OUTPUT"
+          version="$(printf '%s\n' "$manifest_resolution" | awk -F= '$1 == "version" { print $2 }')"
+          upstream_pin="$(printf '%s\n' "$manifest_resolution" | awk -F= '$1 == "upstream_pin" { print $2 }')"
 
           # GHCR package names must be lowercase; the owner login need not be.
           owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
@@ -233,11 +191,22 @@ jobs:
         with:
           node-version: "24.11.0"
 
-      - name: Check shell and workflow sources
+      - name: Check workflow source
         run: |
-          shellcheck smoke-check.sh shared-config-check.sh
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$(go env GOPATH)/bin/actionlint" .github/workflows/otelcol-otelbox.yml
+
+      - name: Check the Go contract tool
+        working-directory: tools/ci
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Go files need gofmt:" >&2
+            printf '%s\n' "$unformatted" >&2
+            exit 1
+          fi
+          go test ./...
+          go vet ./...
 
       - name: Check the harness
         working-directory: test/harness
@@ -252,7 +221,7 @@ jobs:
 
       - name: Check the local exporter adaptations
         run: |
-          for module in internal/exporters/otlpexporter internal/exporters/otlphttpexporter; do
+          for module in internal/exporters/otlpauthretry internal/exporters/otlphttpauthretry; do
             unformatted="$(gofmt -l "$module")"
             if [ -n "$unformatted" ]; then
               echo "Go files need gofmt:" >&2
@@ -281,7 +250,12 @@ jobs:
           git diff --check
 
       - name: Check shared profile regions
-        run: ./shared-config-check.sh
+        working-directory: tools/ci
+        run: >-
+          go run ./cmd/otelbox-ci shared check
+          ../../config/edge.yaml
+          ../../config/gateway.yaml
+          ../../config/host-agent.yaml
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -343,7 +317,25 @@ jobs:
       - name: Smoke-check linked components
         # A dropped component fails the build rather than shipping a silently
         # thin binary.
-        run: ./smoke-check.sh "./$ASSET" builder.yaml
+        working-directory: tools/ci
+        run: >-
+          go run ./cmd/otelbox-ci binary check
+          --binary "../../$ASSET"
+          --manifest ../../builder.yaml
+
+      - name: Validate the edge profile on its native target
+        # Edge is the supported macOS role. Running the same check on Linux
+        # also guards against a target-specific build accepting different
+        # configuration.
+        run: |
+          state="$(mktemp -d)"
+          printf 'Bearer ci-validation-placeholder\n' > "${state}/auth-header"
+          OTELBOX_BIND_HOST=127.0.0.1 \
+          OTELBOX_HEALTH_ENDPOINT=127.0.0.1:13133 \
+          OTELBOX_STORAGE_DIR="${state}/edge" \
+          OTELBOX_UPSTREAM_ENDPOINT=127.0.0.1:14319 \
+          OTELBOX_UPSTREAM_AUTH_HEADER_FILE="${state}/auth-header" \
+            "./$ASSET" validate --config config/edge.yaml
 
       - name: Check reachable Go vulnerabilities
         if: matrix.goos == 'linux'
@@ -399,13 +391,6 @@ jobs:
         # Artefact downloads lose the mode, so what comes back is unrunnable.
         # Every job that downloads a binary needs this.
         run: chmod +x otelcol-otelbox_linux_amd64
-
-      - name: Check that the profiles still agree on their shared blocks
-        # The role profiles used to share a base layer, which made the common
-        # settings identical by construction. They no longer do, and this is what
-        # replaces that guarantee — it needs no binary, so it runs first and
-        # fails before anything else is attempted.
-        run: ./shared-config-check.sh
 
       - name: Validate the three role profiles
         # Each profile is one self-contained file, so this loads the published
@@ -810,6 +795,8 @@ jobs:
           - ordinary logs, metrics and traces acknowledged by the gateway
             replayed from their signal-specific WALs after a forced termination;
           - non-empty bearer allowlist replacement revoked the previous token;
+          - the complete host-agent profile started on Linux with journald, host
+            metrics and self telemetry, and published health and process metrics;
           - under queue pressure, a stopped gateway recipient left its healthy
             neighbour and ingest untouched until its own queue filled, then
             backpressured the receiver through synchronous fan-out, while the

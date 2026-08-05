@@ -1,6 +1,6 @@
 // Renovate repository configuration for otelcol-otelbox: keeps the workflow's
-// actions and the image trust inputs current. Collector pins and local exporter
-// snapshots move together under the release workflow's manual version gate.
+// actions and the image trust inputs current. Collector pins and auth-retry
+// wrapper dependencies move together under the release workflow's manual gate.
 // Runtime concerns (host, token, schedule, onboarding) live in the self-hosted
 // configuration, not here.
 {
@@ -34,11 +34,10 @@
 
   packageRules: [
     {
-      // These modules are source snapshots of the Collector release named by
-      // UPSTREAM_VERSION, not independently maintained applications. Updating
-      // one of their requirements would silently stop the local adaptation
-      // being the pinned upstream exporter plus the reviewed auth-retry patch.
-      // Refresh the complete snapshot when builder.yaml moves instead.
+      // The wrappers import the standard exporters named by UPSTREAM_VERSION.
+      // Updating either module alone would defeat the manifest resolver's
+      // single Collector dependency set. Move both wrappers and builder.yaml in
+      // one reviewed change instead.
       matchManagers: ['gomod'],
       matchFileNames: ['internal/exporters/**/go.mod'],
       enabled: false,

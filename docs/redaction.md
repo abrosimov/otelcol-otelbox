@@ -69,5 +69,35 @@ Consuming deployments must:
   separate signals. None substitutes for another.
 
 Changing the processor configuration requires editing every shared copy and
-running `./shared-config-check.sh` plus the full harness. A new claimed carrier
+running the Go shared-region check plus the full harness. A new claimed carrier
 is not covered until a test observes the exact shipped path.
+
+## Deployment-specific patterns
+
+The canonical `redaction/secrets` rules are a safety floor owned by this
+repository. A consuming deployment must not edit that block to add an internal
+credential format, because doing so creates a permanent merge conflict with
+upstream profile updates.
+
+Instead, the deployment may add a second processor to its fully rendered
+profile:
+
+```yaml
+processors:
+  redaction/deployment:
+    allow_all_keys: true
+    redact_all_types: false
+    summary: info
+    blocked_values:
+      - '^MY_CORP_TOKEN_[A-Z0-9]+$'
+```
+
+Place `redaction/deployment` immediately after `redaction/secrets` in every
+applicable pipeline and before any exporter. The canonical processor must stay
+present and first: deployment patterns extend the floor rather than replace it.
+Do not use multi-file Collector merge behaviour as the extension contract; the
+consuming repository owns one complete rendered profile and its validation.
+
+Every deployment pattern needs a positive leak marker and benign preservation
+cases at the far end. Deployment patterns must not match attributes used by a
+later routing or eligibility processor; test those attributes explicitly.

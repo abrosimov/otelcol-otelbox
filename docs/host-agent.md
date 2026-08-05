@@ -106,7 +106,9 @@ OTELBOX_JOURNAL_UNIT_2=cron.service \
 
 Run even `validate` for this profile on Linux: component construction rejects
 the journald receiver on other operating systems, although it does not execute
-`journalctl`. A runtime smoke test must then be performed on the intended host
-with the intended service account. Command sandboxes that deny the boot-time
+`journalctl`. Repository CI starts the complete profile on a generic Linux
+runner and requires both health and self-metrics. A runtime smoke must still be
+performed on the intended host with the intended service account, journal
+allowlist and filesystem permissions. Command sandboxes that deny the boot-time
 sysctl make `resource_detection/system` fail at startup even when the
 configuration is valid.

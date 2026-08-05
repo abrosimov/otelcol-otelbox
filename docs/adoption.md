@@ -33,7 +33,7 @@ managed destination during migration.
 
 ## Canonical component names
 
-Use the v0.157 canonical spelling in rendered configuration:
+Use the v0.158 canonical spelling in rendered configuration:
 
 | Old spelling | 2.0 spelling |
 | --- | --- |
