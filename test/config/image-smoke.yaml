@@ -1,0 +1,39 @@
+extensions:
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 127.0.0.1:13133
+      status:
+        enabled: true
+        path: /status
+      config:
+        enabled: false
+    component_health:
+      include_permanent_errors: true
+      include_recoverable_errors: false
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+exporters:
+  otlp_grpc/image_smoke:
+    endpoint: 127.0.0.1:4318
+    tls:
+      ca_file: /etc/ssl/certs/ca-certificates.crt
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
+
+service:
+  extensions: [healthcheckv2]
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [otlp_grpc/image_smoke]

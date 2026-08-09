@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/abrosimov/otelcol-otelbox/tools/ci/internal/contract"
+	"github.com/abrosimov/otelcol-otelbox/tools/ci/internal/imagecheck"
 )
 
 func main() {
@@ -19,7 +24,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: otelbox-ci <shared|binary> check | manifest resolve [options]")
+		return fmt.Errorf("usage: otelbox-ci shared check | binary check | image smoke | manifest resolve [options]")
 	}
 
 	switch args[0] + " " + args[1] {
@@ -27,11 +32,40 @@ func run(args []string, stdout io.Writer) error {
 		return runSharedCheck(args[2:], stdout)
 	case "binary check":
 		return runBinaryCheck(args[2:], stdout)
+	case "image smoke":
+		return runImageSmoke(args[2:], stdout)
 	case "manifest resolve":
 		return runManifestResolve(args[2:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0]+" "+args[1])
 	}
+}
+
+func runImageSmoke(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("image smoke", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	image := flags.String("image", "", "container image reference")
+	config := flags.String("config", "", "image smoke configuration")
+	probeImage := flags.String("probe-image", imagecheck.DefaultProbeImage, "readiness probe image")
+	timeout := flags.Duration("timeout", 30*time.Second, "readiness timeout")
+	pull := flags.Bool("pull", false, "pull the image reference before checking it")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("image smoke does not accept positional arguments")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return imagecheck.Smoke(ctx, imagecheck.Options{
+		Image:      *image,
+		ConfigPath: *config,
+		ProbeImage: *probeImage,
+		Timeout:    *timeout,
+		Pull:       *pull,
+	}, stdout)
 }
 
 type stringList []string

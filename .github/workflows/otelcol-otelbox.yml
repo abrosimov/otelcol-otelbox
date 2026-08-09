@@ -551,6 +551,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.12"
+          cache: false
+
       - name: Download the linux binary into the build context
         # The Dockerfile packages and never compiles, so the image ships the
         # exact binary this run tested rather than a second build of it.
@@ -630,7 +636,9 @@ jobs:
           exit-code: "1"
           cache: false
 
-      - name: Smoke-test the packaged binary
+      - name: Inventory packaged binary components
+        # This proves the linked binary inventory, not config, CA or runtime
+        # access under the image's declared user.
         env:
           IMAGE_REF: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -639,6 +647,14 @@ jobs:
             > "$RUNNER_TEMP/image-components.yaml"
           grep -Fq "    version: $VERSION" "$RUNNER_TEMP/image-components.yaml"
           grep -Fq "    - name: otlp_grpc" "$RUNNER_TEMP/image-components.yaml"
+
+      - name: Smoke-test the local image runtime
+        env:
+          IMAGE_REF: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
+        run: >-
+          go -C tools/ci run ./cmd/otelbox-ci image smoke
+          --image "$IMAGE_REF"
+          --config ../../test/config/image-smoke.yaml
 
       - name: Publish the scanned image
         id: publish
@@ -653,6 +669,17 @@ jobs:
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test the published image by digest
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: >-
+          go -C tools/ci run ./cmd/otelbox-ci image smoke
+          --pull
+          --image "$IMAGE@$DIGEST"
+          --config ../../test/config/image-smoke.yaml
 
   release:
     name: Publish release
@@ -801,6 +828,10 @@ jobs:
             neighbour and ingest untouched until its own queue filled, then
             backpressured the receiver through synchronous fan-out, while the
             separate metrics and traces queues remained available.
+          - the locally built image and the registry digest both loaded a
+            mounted configuration and the system CA bundle as \`10001:10001\`,
+            stayed running under the declared restrictions and answered the
+            readiness probe.
 
           Built from ${GITHUB_SHA}.
           EOF

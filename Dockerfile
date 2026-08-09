@@ -6,7 +6,18 @@
 
 # Alpine's base layer carries the Mozilla trust store, so the bundle is lifted
 # out without installing a package. Pinned so a rebuild cannot swap it silently.
-FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS certs
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS rootfs
+
+RUN mkdir -p /rootfs/etc/ssl/certs \
+    && chmod 0755 \
+        /rootfs \
+        /rootfs/etc \
+        /rootfs/etc/ssl \
+        /rootfs/etc/ssl/certs \
+    && cp /etc/ssl/certs/ca-certificates.crt \
+        /rootfs/etc/ssl/certs/ca-certificates.crt \
+    && chmod 0644 \
+        /rootfs/etc/ssl/certs/ca-certificates.crt
 
 # scratch: the collector is statically linked (CGO_ENABLED=0) and every writable
 # path comes from the supervisor, so a shell or libc could only add exposure.
@@ -36,8 +47,9 @@ LABEL org.opencontainers.image.source="https://github.com/abrosimov/otelcol-otel
 # running" answerable from `docker inspect` alone.
 LABEL io.github.abrosimov.otelbox.upstream.collector.version="${UPSTREAM_VERSION}"
 
-# scratch has no trust store, and the gateway verifies TLS on every backend leg.
-COPY --from=certs --chown=0:0 --chmod=0644 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# COPY creates missing parent directories with file-like permissions, so their
+# searchable modes are fixed in the source tree before it enters scratch.
+COPY --from=rootfs --chown=0:0 /rootfs/ /
 
 # World-executable because the supervisor pins a numeric uid that exists in no
 # /etc/passwd, so ownership cannot grant execution.

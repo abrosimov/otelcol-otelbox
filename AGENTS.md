@@ -38,7 +38,7 @@ the built binary from outside.
 | `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
-| `tools/ci/` | Tested Go checks for shared regions and built-binary contents. |
+| `tools/ci/` | Tested Go checks for shared regions, built-binary contents and OCI runtime readiness. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
@@ -261,6 +261,16 @@ archive containing exactly the three role profiles, `image-digest.txt`, and one
 exact-version GHCR image with no `latest` tag. Every downstream job consumes
 the build artefact rather than rebuilding it.
 
+Image release readiness is a separate claim from binary, profile and harness
+readiness. Hadolint is static analysis, and `components` inventories the linked
+binary without proving that the packaged runtime can traverse its rootfs. The
+Go-owned image smoke must load a configuration from `/etc/otelbox`, load the
+system CA bundle and answer readiness as the declared `10001:10001` user under
+the runtime restrictions. Run it against both the locally built image before
+push and the immutable registry digest after push, following build -> boot ->
+probe -> kill with unconditional cleanup. A release depends on both image
+checks.
+
 The formula job rewrites its version, tag URL segments and two checksums after
 publication, verifies the resulting literals, commits and pushes. Do not
 hand-edit those literals or reformat their one-literal-per-line shape. The
@@ -276,6 +286,8 @@ go -C tools/ci run ./cmd/otelbox-ci binary check \
   --binary ../../_build/otelcol-otelbox --manifest ../../builder.yaml
 go -C tools/ci run ./cmd/otelbox-ci shared check \
   ../../config/edge.yaml ../../config/gateway.yaml ../../config/host-agent.yaml
+go -C tools/ci run ./cmd/otelbox-ci image smoke \
+  --image <tag-or-digest> --config ../../test/config/image-smoke.yaml
 ./_build/otelcol-otelbox validate --config config/<role>.yaml
 go test -C test/harness . -count=1 -timeout 15m -v \
   -args -otelcol-binary "$PWD/_build/otelcol-otelbox"

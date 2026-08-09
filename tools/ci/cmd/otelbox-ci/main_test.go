@@ -14,6 +14,8 @@ func TestRunRejectsIncompleteAndUnknownCommands(t *testing.T) {
 		{name: "unknown command", args: []string{"manifest", "check"}},
 		{name: "missing binary", args: []string{"binary", "check"}},
 		{name: "unexpected binary argument", args: []string{"binary", "check", "extra"}},
+		{name: "missing image", args: []string{"image", "smoke"}},
+		{name: "unexpected image argument", args: []string{"image", "smoke", "extra"}},
 		{name: "unexpected manifest argument", args: []string{"manifest", "resolve", "extra"}},
 	}
 
