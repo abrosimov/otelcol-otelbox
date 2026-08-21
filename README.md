@@ -109,9 +109,9 @@ Required string and path variables are documented in the role guides:
 
 ## Build and verify locally
 
-The manifest pins upstream Collector `v0.158.0`. CI pins Go `1.25.14` because
-the initial Go 1.25 release mislinks this generated collector while the patched
-toolchain builds it successfully.
+The manifest pins upstream Collector `v0.158.0`. CI pins Go exactly, currently
+`1.27.0`, because the initial Go 1.25 release mislinked this generated collector
+while the patched 1.25 toolchain built it successfully.
 
 ```console
 go install go.opentelemetry.io/collector/cmd/builder@v0.158.0
