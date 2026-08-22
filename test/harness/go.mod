@@ -7,4 +7,4 @@
 // harness against a binary it has already built.
 module github.com/abrosimov/otelcol-otelbox/test/harness
 
-go 1.25
+go 1.27.0

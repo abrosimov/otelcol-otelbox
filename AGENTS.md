@@ -246,8 +246,10 @@ load and conceal adoption drift.
 
 Upstream module versions never appear in the artefact version. The workflow
 derives OCB's version from the `otlpreceiver` pin and rejects any other `gomod`
-pin that disagrees. Go is pinned to 1.25.14 because 1.25.0 mislinks this
-generated collector.
+pin that disagrees. Go is pinned exactly, currently to 1.27.0, because 1.25.0
+mislinked this generated collector while the patched 1.25 toolchain built the
+same manifest successfully. Move the pin only under a reviewed change that has
+a green build job behind it.
 
 Never create a release tag manually. A default-branch workflow run publishes
 `v<dist.version>` only when neither that release nor an orphan tag exists. Build
@@ -279,7 +281,7 @@ playbook-owned binary and launchd agent, not Homebrew.
 
 ## Verification
 
-Build with OCB v0.158.0 and Go 1.25.14, then run:
+Build with OCB v0.158.0 and Go 1.27.0, then run:
 
 ```console
 go -C tools/ci run ./cmd/otelbox-ci binary check \
