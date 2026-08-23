@@ -78,6 +78,16 @@
 // full, synchronous fan-out backpressures ingest. A full log queue does not
 // block the separately stored metric and trace queues.
 //
+// TestUpstreamClientCertificateIsRequiredAndReplaceable puts a client CA in
+// front of the gateway — the front end a deployment terminating mTLS would
+// stand there — and holds the edge's optional client certificate to three
+// facts: a leaf that CA signed delivers, an edge offering nothing at all never
+// does and names a TLS fault instead, and replacing a rejected pair in place
+// drains the marker the edge retained, with no restart and no signal. The
+// middle one is what makes the certificate load-bearing rather than
+// decorative: without it the first would pass whether or not the exporter
+// offered anything.
+//
 // # Usage
 //
 // From the repository root:

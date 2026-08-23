@@ -15,6 +15,8 @@
 # OTELBOX_UPSTREAM_AUTH_HEADER_FILE, OTELBOX_SCRAPE_TARGET_1,
 # OTELBOX_SCRAPE_TARGET_2, OTELBOX_JOURNAL_UNIT_1 and OTELBOX_JOURNAL_UNIT_2.
 # Bind, health, memory and queue values have safe reference defaults.
+# OTELBOX_UPSTREAM_TLS_CERT_FILE and OTELBOX_UPSTREAM_TLS_KEY_FILE are optional
+# and unset by default, on the same contract as the edge's.
 
 extensions:
   # The same health check the other two roles wire, on the same keys; see
@@ -205,7 +207,20 @@ exporters:
     endpoint: ${env:OTELBOX_UPSTREAM_ENDPOINT}
     auth:
       authenticator: headers_setter/gateway
-    compression: gzip
+    # The same leg the edge sends over and the same settings; see
+    # config/edge.yaml for why each one is set. `insecure: false` is configgrpc's
+    # default and is restated because it is the line a reviewer looks for, and
+    # because a host agent reaches its gateway across the same networks an edge
+    # does — this role has no loopback exemption.
+    tls:
+      insecure: false
+      cert_file: ${env:OTELBOX_UPSTREAM_TLS_CERT_FILE:-}
+      key_file: ${env:OTELBOX_UPSTREAM_TLS_KEY_FILE:-}
+      reload_interval: ${env:OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL:-1h}
+    # zstd, on the same reasoning the edge states: this leg's far end is the
+    # same binary, so the codec is guaranteed to be registered there. The
+    # gateway's recipient exporters keep gzip.
+    compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
     timeout: 10s
     sending_queue:
       enabled: true

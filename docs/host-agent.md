@@ -28,7 +28,9 @@ Reference defaults are `OTELBOX_BIND_HOST=127.0.0.1`,
 `OTELBOX_MEMORY_SPIKE_LIMIT_MIB=80`, `OTELBOX_EXPORTER_CONSUMERS=2`,
 `OTELBOX_AUTH_RETRY_INTERVAL=1h`,
 `OTELBOX_STORAGE_MAX_SIZE_BYTES=6442450944` and
-`OTELBOX_QUEUE_SIZE_BYTES=4294967296`. The role exports metrics and logs, so
+`OTELBOX_QUEUE_SIZE_BYTES=4294967296` and
+`OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL=1h` and
+`OTELBOX_UPSTREAM_COMPRESSION=zstd`. The role exports metrics and logs, so
 reserve both signal files, compaction headroom and the independent journald
 cursor. Render production queue capacity from measured peak rate and required
 outage duration.
@@ -69,9 +71,19 @@ Bearer one-host-agent-token
 
 `headers_setter/gateway` adds no scheme and a trailing comment would be sent as
 part of the credential. Outbound TLS verification remains at the OTLP
-exporter's secure default. A deployment whose private gateway endpoint is
-deliberately plaintext must state `tls.insecure: true` in its rendered profile;
-this repository does not infer that from co-location.
+exporter's secure default, now stated as `tls.insecure: false` rather than
+inherited, because a host agent reaches its gateway across the same networks an
+edge does and has no loopback exemption. A deployment whose private gateway
+endpoint is deliberately plaintext must state `tls.insecure: true` in its
+rendered profile; this repository does not infer that from co-location.
+
+`OTELBOX_UPSTREAM_TLS_CERT_FILE`, `OTELBOX_UPSTREAM_TLS_KEY_FILE` and
+`OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` carry the same contract as the edge's,
+including the rule that exactly one half of the pair fails `validate` while an
+unresolvable path fails only at start. See
+[the edge guide](edge.md#optional-client-certificate) for the full account. A
+machine running both roles may point them at one certificate: the two exporters
+read the same variables, so a shared host identity needs no separate rendering.
 
 The outbound queue persists through `file_storage/gateway`, batches after
 enqueue and retries transient failure indefinitely. Authentication rejection
@@ -82,7 +94,13 @@ waiting would merely miss every collection cycle during the wait. The WAL
 therefore retains a bounded outage and rejects new samples at capacity. Monitor
 capacity well before that boundary.
 
-The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope.
+The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope. That
+holds whatever `OTELBOX_UPSTREAM_COMPRESSION` selects: the queue sizer measures
+uncompressed items and the gateway's receive limit applies to the decompressed
+message. The leg defaults to `zstd` because its far end is this same binary and
+the codec is therefore registered there; see
+[the edge guide](edge.md#compression) for the full reasoning and for why the
+gateway's recipient exporters keep `gzip`.
 
 ## Endpoints and validation
 

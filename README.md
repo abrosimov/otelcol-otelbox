@@ -156,7 +156,11 @@ It proves:
    queue has headroom; a full log queue backpressures log ingest without blocking
    the separate metrics and traces queues;
 7. non-empty allowlist replacement revokes the previous bearer token;
-8. on Linux, the complete host-agent profile starts with `journald`, host
+8. against a gateway that names a client CA, an edge holding a trusted client
+   leaf delivers, an edge offering no client certificate never does, and
+   replacing a rejected certificate and key in place drains the retained marker
+   without a restart;
+9. on Linux, the complete host-agent profile starts with `journald`, host
    metrics and self telemetry, and publishes health and process metrics.
 
 The black-box harness starts the `edge` and `gateway` roles on every supported

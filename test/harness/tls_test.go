@@ -124,6 +124,107 @@ func (g gatewayChain) verifyServed(endpoint string) error {
 	return conn.Close()
 }
 
+// The optional second factor on the same leg, supplied only by the scenario
+// that loads test/config/gateway-mtls-ci.yaml. Both leaves are minted up front
+// and written to one pair of paths in turn: the rotation claim replaces the
+// material under a live exporter, which can only be stated if the paths the
+// process started with never move.
+type clientChain struct {
+	caFile    string
+	certFile  string
+	keyFile   string
+	trusted   clientCertificate
+	untrusted clientCertificate
+}
+
+type clientCertificate struct {
+	certDER []byte
+	keyDER  []byte
+}
+
+func mintClientChain(t *testing.T, dir string) clientChain {
+	t.Helper()
+
+	trustedCA := mintCA(t, "otelbox integration test client CA")
+	// A second authority the gateway is never given, rather than a corrupted
+	// leaf: an unknown issuer is the failure a real deployment sees, and it is
+	// the one the gateway's client_ca_file is there to produce.
+	untrustedCA := mintCA(t, "otelbox integration test unknown client CA")
+
+	chain := clientChain{
+		caFile:    filepath.Join(dir, "client-ca.pem"),
+		certFile:  filepath.Join(dir, "client-cert.pem"),
+		keyFile:   filepath.Join(dir, "client-key.pem"),
+		trusted:   trustedCA.signClientLeaf(t, "otelbox integration test edge"),
+		untrusted: untrustedCA.signClientLeaf(t, "otelbox integration test unknown edge"),
+	}
+	writePEM(t, chain.caFile, "CERTIFICATE", trustedCA.der, 0o644)
+	return chain
+}
+
+func (c clientChain) install(t *testing.T, certificate clientCertificate) {
+	t.Helper()
+
+	writePEM(t, c.certFile, "CERTIFICATE", certificate.certDER, 0o644)
+	writePEM(t, c.keyFile, "PRIVATE KEY", certificate.keyDER, 0o600)
+}
+
+type certificateAuthority struct {
+	certificate *x509.Certificate
+	der         []byte
+	key         *ecdsa.PrivateKey
+}
+
+func mintCA(t *testing.T, commonName string) certificateAuthority {
+	t.Helper()
+
+	key := generateKey(t)
+	template := &x509.Certificate{
+		SerialNumber:          serialNumber(t),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             time.Now().Add(-certBackdate),
+		NotAfter:              time.Now().Add(certLifetime),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("could not self-sign the %q CA: %v", commonName, err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("could not parse the %q CA this run just minted: %v", commonName, err)
+	}
+	return certificateAuthority{certificate: certificate, der: der, key: key}
+}
+
+func (ca certificateAuthority) signClientLeaf(t *testing.T, commonName string) clientCertificate {
+	t.Helper()
+
+	key := generateKey(t)
+	template := &x509.Certificate{
+		SerialNumber: serialNumber(t),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    time.Now().Add(-certBackdate),
+		NotAfter:     time.Now().Add(certLifetime),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		// No SAN, because a verifier checks no name on a client leaf, and this
+		// extended usage, because it does check that: a leaf carrying only
+		// ExtKeyUsageServerAuth is refused with an otherwise valid chain.
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.certificate, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("could not sign the %q client leaf: %v", commonName, err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("could not marshal the %q client key: %v", commonName, err)
+	}
+	return clientCertificate{certDER: der, keyDER: keyDER}
+}
+
 func generateKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
 
