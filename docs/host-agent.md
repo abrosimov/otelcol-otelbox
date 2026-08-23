@@ -29,7 +29,8 @@ Reference defaults are `OTELBOX_BIND_HOST=127.0.0.1`,
 `OTELBOX_AUTH_RETRY_INTERVAL=1h`,
 `OTELBOX_STORAGE_MAX_SIZE_BYTES=6442450944` and
 `OTELBOX_QUEUE_SIZE_BYTES=4294967296` and
-`OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL=1h`. The role exports metrics and logs, so
+`OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL=1h` and
+`OTELBOX_UPSTREAM_COMPRESSION=zstd`. The role exports metrics and logs, so
 reserve both signal files, compaction headroom and the independent journald
 cursor. Render production queue capacity from measured peak rate and required
 outage duration.
@@ -93,7 +94,13 @@ waiting would merely miss every collection cycle during the wait. The WAL
 therefore retains a bounded outage and rejects new samples at capacity. Monitor
 capacity well before that boundary.
 
-The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope.
+The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope. That
+holds whatever `OTELBOX_UPSTREAM_COMPRESSION` selects: the queue sizer measures
+uncompressed items and the gateway's receive limit applies to the decompressed
+message. The leg defaults to `zstd` because its far end is this same binary and
+the codec is therefore registered there; see
+[the edge guide](edge.md#compression) for the full reasoning and for why the
+gateway's recipient exporters keep `gzip`.
 
 ## Endpoints and validation
 

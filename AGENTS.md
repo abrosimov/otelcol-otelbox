@@ -156,6 +156,18 @@ started with — the pair is polled and re-read at the next handshake, not watch
 by fsnotify as the header file is. The gateway profile is unchanged: mTLS
 terminates on whatever front end a deployment puts before it.
 
+Edge and host agent compress the gateway leg with `zstd` through
+`OTELBOX_UPSTREAM_COMPRESSION`. That choice is scoped to legs whose far end is
+this same binary: a gRPC client may only select a codec registered in the server
+it dials, and registration follows the peer's build rather than its
+configuration. The gateway's recipient exporters therefore keep `gzip`, whose
+peer is a third-party backend, and a change there needs that backend's own
+evidence. An unrecognised codec is refused by name at load. Compression level is
+not configurable because the persistent-queue wrapper in `internal/exporters/`
+does not carry `compression_params`. The codec is orthogonal to the sizing
+invariants: `sizer: bytes` counts uncompressed queue items and
+`max_recv_msg_size_mib` bounds the decompressed message.
+
 Changing either authenticator, file format, header, receiver `auth:` block or
 TLS overlay requires the full harness. A process and `/status` can remain green
 while every export is rejected.

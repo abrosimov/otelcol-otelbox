@@ -31,6 +31,7 @@ Reference variables have safe absent-variable defaults:
 | `OTELBOX_UPSTREAM_TLS_CERT_FILE` | none | Optional client certificate presented to the gateway leg. Absent means none is offered. |
 | `OTELBOX_UPSTREAM_TLS_KEY_FILE` | none | Private key for the certificate above. Supply both or neither. |
 | `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` | `1h` | How stale the client pair may be before the next handshake re-reads it. |
+| `OTELBOX_UPSTREAM_COMPRESSION` | `zstd` | Wire codec for the gateway leg. `zstd`, `gzip` and `none` are exercised; see below. |
 
 If `OTELBOX_STORAGE_DIR` is absent, its invalid `/dev/null/...-is-required`
 sentinel makes validation fail before a root-level WAL can be selected. An
@@ -105,6 +106,32 @@ and retries at `OTELBOX_AUTH_RETRY_INTERVAL`. Replace the header file in place;
 `headers_setter/gateway` supplies the new value to a later attempt without a
 Collector restart. The interval is deliberately much longer than the ordinary
 5–30 second transient backoff.
+
+## Compression
+
+The gateway leg uses `zstd`. It is chosen for this leg specifically, not as a
+general preference: a gRPC client can only select a codec that is registered in
+the server it dials, and that is a property of the peer's build rather than its
+configuration. Both ends of this leg are `otelcol-otelbox`, so the guarantee
+holds by construction. The gateway's own recipient exporters stay on `gzip`,
+where the peer is a third-party backend.
+
+Override with `OTELBOX_UPSTREAM_COMPRESSION` when the deployment terminates this
+leg somewhere other than this binary, or when the transport already compresses —
+`none` is a legitimate value there. An unrecognised value is refused by name at
+load rather than silently ignored. Compression level is not configurable: the
+persistent-queue exporter wrapper does not carry `compression_params`.
+
+`zstd` and `gzip` are the values the harness has actually carried records under,
+and `none` needs no codec at all. `snappy`, `lz4`, `zlib` and `deflate` are
+accepted by the configuration loader, but loading is not delivery: a codec must
+also be registered in the gRPC peer, so treat those as unproven on this leg
+until a run says otherwise.
+
+The codec changes neither sizing invariant. `sizer: bytes` measures uncompressed
+queue items, and the gateway's `max_recv_msg_size_mib` applies to the
+decompressed message, so the 1.5 MiB sender batch stays inside the 2 MiB receive
+envelope regardless.
 
 ## Durability
 

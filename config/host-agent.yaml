@@ -217,7 +217,10 @@ exporters:
       cert_file: ${env:OTELBOX_UPSTREAM_TLS_CERT_FILE:-}
       key_file: ${env:OTELBOX_UPSTREAM_TLS_KEY_FILE:-}
       reload_interval: ${env:OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL:-1h}
-    compression: gzip
+    # zstd, on the same reasoning the edge states: this leg's far end is the
+    # same binary, so the codec is guaranteed to be registered there. The
+    # gateway's recipient exporters keep gzip.
+    compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
     timeout: 10s
     sending_queue:
       enabled: true

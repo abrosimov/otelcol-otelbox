@@ -214,7 +214,21 @@ exporters:
       # file changes. configtls defaults to 0, which pins the process to the
       # material it started with. Harmless while no pair is configured.
       reload_interval: ${env:OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL:-1h}
-    compression: gzip
+    # zstd rather than gzip, and only because both ends of THIS leg are the same
+    # binary: the codec a gRPC client selects has to be registered in the server
+    # it dials, and that is a property of the peer's build rather than its
+    # configuration. The gateway's own recipient exporters stay on gzip, where
+    # the peer is a third-party backend nobody here can vouch for.
+    #
+    # Overridable because a deployment may terminate this leg on a front end
+    # that is not this binary. `none` is a legitimate value where the transport
+    # already compresses; an unknown one is refused by name at load.
+    #
+    # No effect on the sizing invariants either side of it: `sizer: bytes` below
+    # measures uncompressed queue items, and the gateway's `max_recv_msg_size_mib`
+    # applies to the decompressed message, so batch < receive envelope holds
+    # whatever the codec is.
+    compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
     timeout: 10s
     sending_queue:
       enabled: true
