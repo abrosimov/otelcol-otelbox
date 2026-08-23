@@ -15,6 +15,9 @@
 # Required environment: OTELBOX_STORAGE_DIR, OTELBOX_UPSTREAM_ENDPOINT,
 # OTELBOX_UPSTREAM_AUTH_HEADER_FILE. Bind, health, memory and queue values have
 # safe reference defaults and should still be rendered explicitly in production.
+# OTELBOX_UPSTREAM_TLS_CERT_FILE and OTELBOX_UPSTREAM_TLS_KEY_FILE are optional
+# and unset by default; see the gateway exporter's `tls:` block for what
+# supplying them does and what leaving them out does not.
 
 extensions:
   # `healthcheckv2`, not the alpha `health_check`, which is no longer linked. It
@@ -190,6 +193,27 @@ exporters:
       # off. Not the milder-looking `insecure_skip_verify`, which negotiates TLS
       # and then validates no certificate at all.
       insecure: false
+      # Optional client identity, for a deployment that terminates this leg on a
+      # front end demanding mTLS. It is a factor the bearer token is not: the
+      # token authenticates a client to the gateway's allowlist, this proves
+      # possession of a host key to whatever stands in front of it, and the two
+      # rotate on separate schedules.
+      #
+      # Empty is the one deliberately safe absent value in this profile —
+      # configtls then reads no material and offers no certificate, which is
+      # what a deployment tunnelling this leg over SSH wants. Supply both halves
+      # or neither: `validate` rejects a lone `cert_file` or `key_file`. A
+      # configured path that does not resolve is NOT a load error; the exporter
+      # fails at start with `failed to load TLS cert and key`, so a typo stops
+      # the process rather than quietly dropping the second factor.
+      cert_file: ${env:OTELBOX_UPSTREAM_TLS_CERT_FILE:-}
+      key_file: ${env:OTELBOX_UPSTREAM_TLS_KEY_FILE:-}
+      # Rotation without a restart, as the header file above has, by a different
+      # mechanism: polling rather than fsnotify, and lazy — the pair is re-read
+      # on the first handshake after this interval elapses, not the moment the
+      # file changes. configtls defaults to 0, which pins the process to the
+      # material it started with. Harmless while no pair is configured.
+      reload_interval: ${env:OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL:-1h}
     compression: gzip
     timeout: 10s
     sending_queue:

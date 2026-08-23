@@ -144,6 +144,18 @@ the deployment, but a bearer token must never cross an unencrypted network.
 The integration overlay mints a CA and leaf per run and verifies the
 edge-to-gateway leg; backend doubles explicitly opt into plaintext.
 
+Edge and host agent may also present a client certificate on that leg through
+`OTELBOX_UPSTREAM_TLS_CERT_FILE` and `OTELBOX_UPSTREAM_TLS_KEY_FILE`. This is
+the one place where an absent value is deliberately safe rather than a fault:
+empty means no certificate is offered, so a deployment tunnelling the leg keeps
+working unchanged. Exactly one half of the pair is a named load error; a
+configured path that does not resolve is not, and fails the exporter at start
+instead. `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` defaults to `1h` because
+`configtls` defaults to `0`, which would pin a process to the material it
+started with — the pair is polled and re-read at the next handshake, not watched
+by fsnotify as the header file is. The gateway profile is unchanged: mTLS
+terminates on whatever front end a deployment puts before it.
+
 Changing either authenticator, file format, header, receiver `auth:` block or
 TLS overlay requires the full harness. A process and `/status` can remain green
 while every export is rejected.
@@ -300,10 +312,11 @@ validation on Linux because the journald receiver rejects other operating
 systems during component construction. Validation does not start receivers or
 exporters. The full harness proves edge/gateway delivery, redaction,
 authentication backoff and live credential recovery, selected-trace routing
-and headers, persistence across SIGKILL, token replacement and recipient
-coupling under pressure. On Linux it also starts the complete host-agent profile
-and requires health and self metrics; target-host permissions and collection
-remain deployment acceptance evidence.
+and headers, persistence across SIGKILL, token replacement, client-certificate
+enforcement and in-place certificate replacement on the gateway leg, and
+recipient coupling under pressure. On Linux it also starts the complete
+host-agent profile and requires health and self metrics; target-host
+permissions and collection remain deployment acceptance evidence.
 
 `resource_detection`'s system detector and every `host_metrics` scraper read
 boot time during startup. A command sandbox may deny that read and report

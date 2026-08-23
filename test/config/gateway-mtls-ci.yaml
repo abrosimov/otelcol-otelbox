@@ -1,0 +1,34 @@
+# otelbox — GATEWAY ROLE, mTLS CI OVERLAY. Loaded THIRD, after gateway-ci.yaml,
+# only by the client-certificate scenario:
+#
+#   otelcol-otelbox --config config/gateway.yaml \
+#                   --config test/config/gateway-ci.yaml \
+#                   --config test/config/gateway-mtls-ci.yaml
+#
+# CI ONLY — never copy any part of this into a deployment. The gateway profile
+# owns no inbound TLS: a deployment terminates it on whatever front end stands
+# before the role, and that front end is where mTLS belongs. This layer plays
+# that front end for one scenario so the edge's optional client certificate can
+# be proved load-bearing. Without a client CA the server requests no certificate
+# at all, and a test would pass identically whether the exporter offered one or
+# not.
+#
+# The listeners stay on gateway-ci.yaml's 34xxx ports: only one gateway runs at
+# a time in this scenario, as in the delivery and durability ones.
+#
+# Environment, as gateway-ci.yaml requires it, plus
+# OTELBOX_CI_GATEWAY_CLIENT_CA_FILE, which only this layer names.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        # Merges into the server certificate gateway-ci.yaml sets, key by key.
+        tls:
+          # Naming a client CA is itself the switch: configtls has no separate
+          # boolean and sets `RequireAndVerifyClientCert` whenever this is
+          # present. A client that offers nothing, or a leaf signed by any other
+          # authority, therefore fails the handshake before its bearer token is
+          # read — which is what makes the certificate a factor of its own
+          # rather than a decoration on an already-authenticated request.
+          client_ca_file: ${env:OTELBOX_CI_GATEWAY_CLIENT_CA_FILE}
