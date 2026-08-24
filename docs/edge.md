@@ -48,6 +48,12 @@ the reference sizes.
 | `${OTELBOX_BIND_HOST}:8888/metrics` | Detailed Collector metrics; also scraped back through the durable telemetry pipeline. |
 | `${OTELBOX_HEALTH_ENDPOINT}/status` | Component lifecycle health. It does not prove delivery. |
 
+The profile publishes exactly these listeners. A deployment that must route a
+local producer to the gateway's selected-traces recipient adds its own
+classified listener and a `resource` processor instance rather than changing
+these; the linked-but-unwired component and its failure modes are described in
+[stamping the route marker](gateway.md#stamping-the-route-marker-where-the-producer-cannot).
+
 ## Authentication and TLS
 
 `headers_setter/gateway` reads the complete `authorization` value from the

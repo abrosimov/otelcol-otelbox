@@ -11,6 +11,9 @@ import (
 
 var componentKinds = []string{"receivers", "processors", "exporters", "extensions", "connectors"}
 
+// Not the module comparison restated: a renamed type, or one resolving to a
+// deprecated_type, still links its module at its pinned version, and only the
+// name it registers shows that. One per manifest module, wired or not.
 var requiredComponentNames = []string{
 	"bearertokenauth",
 	"file_storage",
@@ -25,6 +28,7 @@ var requiredComponentNames = []string{
 	"otlp_http",
 	"prometheus",
 	"redaction",
+	"resource",
 	"resource_detection",
 	"file",
 }

@@ -88,6 +88,16 @@
 // decorative: without it the first would pass whether or not the exporter
 // offered anything.
 //
+// TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
+// exercises the `resource` processor, which the binary links and no role profile
+// wires. It stands up the arrangement docs/gateway.md documents for a producer
+// that cannot classify itself: an edge carrying a deployment-rendered classified
+// listener and `resource` instance stamps `otelbox.telemetry.class` on a trace
+// that arrived without it, and the gateway's own filter selects the result.
+// The trace posted to the ordinary listener in the same run must not be
+// selected, which is what holds the stamp to the one pipeline that carries it —
+// assertion 3 above proves the filter, and only this negative proves the reach.
+//
 // # Usage
 //
 // From the repository root:

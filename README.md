@@ -77,6 +77,13 @@ Traces classified with
 The consuming deployment owns its concrete endpoint, credentials and protocol
 headers.
 
+Producers own that classification and no published profile sets it. For the
+producer that cannot set it but whose stream the local collector can already
+tell apart — a dedicated listener, a named scrape job, a journald unit set —
+2.3.0 links the `resource` processor without wiring it anywhere. A deployment
+renders its own instance on exactly that pipeline; see
+[stamping the route marker](docs/gateway.md#stamping-the-route-marker-where-the-producer-cannot).
+
 The binary deliberately does not link the `batch` processor. It acknowledges
 upstream before its in-memory batch reaches the exporter and logs, rather than
 returns, a later send failure. Sender batching is therefore performed inside

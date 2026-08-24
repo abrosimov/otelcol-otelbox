@@ -1,0 +1,74 @@
+# otelbox — EDGE ROLE, ROUTE-MARKER CI OVERLAY. Loaded THIRD, after edge-ci.yaml,
+# only by test/harness (TestStampedRouteMarkerSelectsAnUnclassifiedTrace):
+#
+#   otelcol-otelbox --config config/edge.yaml \
+#                   --config test/config/edge-ci.yaml \
+#                   --config test/config/edge-route-marker-ci.yaml
+#
+# CI ONLY — never copy any part of this into a deployment. It plays the
+# deployment-rendered addition that docs/gateway.md describes under "Stamping the
+# route marker where the producer cannot", so the `resource` processor the binary
+# links and no role profile wires has something that exercises it end to end.
+# Reading that section is the prerequisite for changing anything here: the
+# argument for the placement and the verb below lives there, not in this file.
+#
+# It adds one listener and one trace pipeline and touches nothing else. Maps
+# merge key by key, so the profile's `traces`, `metrics`, `logs` and
+# `metrics/self` pipelines survive untouched — and `traces` has to, because a
+# trace posted to the ordinary listener not reaching the selected-traces
+# recipient is the other half of what the scenario asserts.
+#
+# Environment: exactly what edge-ci.yaml already requires. This layer names no
+# variable of its own; its listener is a literal, as every other CI listener is.
+
+receivers:
+  # The address is the classification: what arrives here is llm by the
+  # deployment's own statement about that port, which is the producer the
+  # documented reference exists for. 34319 continues edge-ci.yaml's block and so
+  # misses 4319, the port that reference uses — a workstation running the
+  # documented form is not disturbed by a test run.
+  #
+  # HTTP where the reference shows gRPC, because the harness's OTLP client is
+  # JSON over HTTP. The protocol is not the subject; the processor's placement
+  # and verb are, and neither depends on it.
+  otlp/llm:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:34319
+        # The role profile's own local-producer cap, restated: classifying a
+        # listener is not a reason to give it more ingest headroom than the
+        # ordinary one, and the sender-batch invariant is sized against this.
+        max_request_body_size: 1048576
+
+processors:
+  # `upsert` rather than `insert`, and the listener above is the whole reason: a
+  # producer that reached that port has already been classified by the address it
+  # chose, so a value it set for itself is not the more authoritative one.
+  # `insert` is the right verb for a pipeline that may carry both kinds, which
+  # this one cannot.
+  #
+  # What the scenario posts carries no `otelbox.telemetry.class` at all, so what
+  # it proves is the stamp — the one outcome both verbs share. Precedence between
+  # them is a deployment's choice and is argued in docs/gateway.md; a test that
+  # asserted one of them here would be asserting a preference, not a contract.
+  resource/llm:
+    attributes:
+      - key: otelbox.telemetry.class
+        value: llm
+        action: upsert
+
+service:
+  pipelines:
+    # A pipeline of its own rather than a processor appended to `traces`. On
+    # `traces` it would classify everything this edge carries, fill the
+    # selected-traces WAL with data that recipient never asked for and couple
+    # every local producer to its outages.
+    #
+    # `resource/llm` sits where `resource_detection` sits, before
+    # `redaction/secrets`, so the attribute it adds is scanned by the same
+    # patterns as an ingested one. After redaction it would be the one attribute
+    # on the record exempt from the control every other one passes.
+    traces/llm:
+      receivers: [otlp/llm]
+      processors: [memory_limiter, resource_detection, resource/llm, redaction/secrets]
+      exporters: [otlp_grpc/gateway]

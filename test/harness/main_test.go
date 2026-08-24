@@ -20,9 +20,12 @@ import (
 // and the host agent 8890. A developer running their own edge must be able to
 // run this test.
 const (
-	edgeHTTPPort    = 34318
-	edgeHealthPort  = 34133
-	edgeMetricsPort = 34888
+	edgeHTTPPort = 34318
+	// Published by no role profile. test/config/edge-route-marker-ci.yaml adds
+	// this listener the way a deployment would, and only that scenario loads it.
+	edgeClassifiedHTTPPort = 34319
+	edgeHealthPort         = 34133
+	edgeMetricsPort        = 34888
 
 	gatewayHTTPPort       = 34328
 	gatewayGRPCPort       = 34327

@@ -41,6 +41,68 @@ The pinned `filter` processor and `headers_setter` extension are Alpha; their
 configuration is intentionally narrow and the black-box routing/header harness
 is part of the release gate.
 
+### Stamping the route marker where the producer cannot
+
+Setting `otelbox.telemetry.class` remains the producer's job, and the published
+profiles contain nothing that sets it. Some producers cannot be changed: a
+third-party LLM tool emits OTLP with a fixed resource, and the only thing that
+distinguishes it is where it sends. Since 2.3.0 the binary therefore links the
+`resource` processor, wired by no role profile, so a deployment can stamp the
+marker on a stream its own collector can already tell apart.
+
+Render it in the consuming repository's configuration, never by editing a
+published profile, and only on the pipeline that carries the stream. The edge
+form adds a second listener whose address is the classification:
+
+```yaml
+# Deployment-rendered addition to an edge configuration. Ports, budgets and the
+# rest of the profile are unchanged; only this listener is classified.
+receivers:
+  otlp/llm:
+    protocols:
+      grpc:
+        endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:4319
+        max_recv_msg_size_mib: 1
+
+processors:
+  resource/llm:
+    attributes:
+      - key: otelbox.telemetry.class
+        value: llm
+        action: upsert
+
+service:
+  pipelines:
+    traces/llm:
+      receivers: [otlp/llm]
+      processors: [memory_limiter, resource_detection, resource/llm, redaction/secrets]
+      exporters: [otlp_grpc/gateway]
+```
+
+Four things decide whether this behaves:
+
+- **Position.** `resource/llm` goes before `redaction/secrets`, where
+  `resource_detection` goes, so an attribute it adds is scanned by the same
+  patterns as an ingested one. `otelbox.telemetry.class=llm` matches no blocked
+  key or value and survives; a marker chosen with `token` or `auth` in its name
+  would not.
+- **Verb.** `upsert` overwrites a producer that did classify itself; `insert`
+  defers to it. The gateway routes on the result, so the wrong verb silently
+  reroutes traffic. Prefer `insert` when the stream may carry both kinds.
+- **Reach.** One pipeline, not the role. Putting `resource/llm` on the ordinary
+  `traces` pipeline classifies everything the edge carries, which fills the
+  selected-traces WAL with data that recipient never asked for and couples
+  unrelated producers to its outages.
+- **Surface.** A new listener is new ingest. It inherits the edge's absent-value
+  loopback default and its lack of authentication; treat the port as the
+  workstation-local boundary it is.
+
+The host-agent form is the same processor on a named scrape job's or journald
+unit's pipeline instead of a listener. The gateway form — stamping on ingest —
+is the one to avoid: the gateway cannot distinguish streams that arrived through
+one authenticated receiver, so it would be guessing, which is precisely what the
+paragraph above forbids.
+
 ## Required environment
 
 | Variable | Meaning |

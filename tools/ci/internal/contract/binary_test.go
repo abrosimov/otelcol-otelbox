@@ -52,7 +52,7 @@ func TestParsersRejectMalformedBinaryModule(t *testing.T) {
 func completeContracts() (string, string) {
 	sections := map[string][]string{
 		"receivers":  {"host_metrics", "journald", "otlp", "prometheus"},
-		"processors": {"filter", "memory_limiter", "redaction", "resource_detection"},
+		"processors": {"filter", "memory_limiter", "redaction", "resource", "resource_detection"},
 		"exporters":  {"file", "otlp_grpc", "otlp_http"},
 		"extensions": {"bearertokenauth", "file_storage", "headers_setter", "healthcheckv2"},
 		"connectors": {},

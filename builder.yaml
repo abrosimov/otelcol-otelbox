@@ -11,7 +11,7 @@ dist:
     host-agent roles.
   output_path: ./_build
   # Unquoted: the Go manifest resolver requires one stable semantic version.
-  version: 2.2.0
+  version: 2.3.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0
@@ -33,6 +33,21 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.158.0
   # Selects the trace subset that has an additional required recipient.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.158.0
+  # Linked and wired by no role profile, which is the point. The reference
+  # profiles keep a classification such as `otelbox.telemetry.class` a
+  # producer's own statement and let the gateway's `filter` only read it; that
+  # contract is unchanged. This exists for the deployment whose producer cannot
+  # make the statement itself but whose collector can already tell the stream
+  # apart — a dedicated listener, a named scrape job, a journald unit set — and
+  # which therefore renders its own `resource/<name>` instance on exactly that
+  # pipeline rather than on everything the role carries.
+  #
+  # Place any such instance BEFORE `redaction/secrets`, where
+  # `resource_detection` sits, so an attribute this adds is subject to the same
+  # patterns as an ingested one. `action: upsert` overwrites a producer that did
+  # make the statement; `insert` defers to it. Choose deliberately — the gateway
+  # routes on the result, so the wrong verb silently reroutes traffic.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.158.0
 
 exporters:
   # Thin wrappers put the persistent queue around standard upstream exporters,
