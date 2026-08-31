@@ -124,6 +124,27 @@ func (g gatewayChain) verifyServed(endpoint string) error {
 	return conn.Close()
 }
 
+// verifyRejectsUncertified connects to the gateway without offering a client
+// certificate and expects the handshake to be refused. A deterministic probe
+// instead of a log-file poll: it removes the gRPC reconnect-backoff timing
+// dependency that made the log-based check flaky on slow CI runners.
+func (g gatewayChain) verifyRejectsUncertified(endpoint string) error {
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: tlsProbeTimeout},
+		"tcp", endpoint,
+		&tls.Config{
+			RootCAs:    g.roots,
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"h2"},
+		},
+	)
+	if err != nil {
+		return nil
+	}
+	conn.Close()
+	return fmt.Errorf("the gateway at %s accepted a TLS handshake without a client certificate", endpoint)
+}
+
 // The optional second factor on the same leg, supplied only by the scenario
 // that loads test/config/gateway-mtls-ci.yaml. Both leaves are minted up front
 // and written to one pair of paths in turn: the rotation claim replaces the

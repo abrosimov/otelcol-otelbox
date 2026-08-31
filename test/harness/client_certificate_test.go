@@ -20,9 +20,16 @@ const (
 	// raising the shared deliveryTimeout would slacken every other scenario.
 	certificateRecoveryTimeout = 150 * time.Second
 
-	// The rejection is established by the logged TLS fault, polled for first;
-	// this window only has to outlast the retry that follows it, so that "not
-	// delivered" is a state rather than a moment.
+	// Claim 2 verifies the gateway's rejection with a direct TLS probe (instant
+	// and deterministic), then holds this window open to confirm that data never
+	// leaks through. The window must cover the sending queue's batch flush
+	// (~200 ms) plus the first two retry_on_failure cycles (5 s + 10 s), with
+	// margin for a slow CI runner.
+	certificateRejectionWindow = 30 * time.Second
+
+	// Claim 3's staysFalse window: the rejection was established by the logged
+	// TLS fault, polled for first; this window only has to outlast the retry
+	// that follows it, so that "not delivered" is a state rather than a moment.
 	certificateSilenceWindow = 5 * time.Second
 )
 
@@ -149,6 +156,14 @@ func TestUpstreamClientCertificateIsRequiredAndReplaceable(t *testing.T) {
 	})
 
 	t.Run("claim 2: an edge offering no client certificate never delivers", func(t *testing.T) {
+		// Confirm the gateway rejects a TLS handshake without a client
+		// certificate. A direct probe from the test: instant, deterministic,
+		// and independent of gRPC's reconnect backoff timing that made the
+		// earlier log-based poll flaky on slow CI runners.
+		if err := server.verifyRejectsUncertified(gatewayEndpoint); err != nil {
+			t.Fatalf("precondition: %v", err)
+		}
+
 		edge := startEdge(t, "edge-no-certificate", false)
 		if err := poll(readyTimeout, edge, "the edge's health endpoint", edgeHealthy); err != nil {
 			t.Fatalf("the edge never became healthy without a client certificate, which is the profile's default and must still start: %v", err)
@@ -158,12 +173,11 @@ func TestUpstreamClientCertificateIsRequiredAndReplaceable(t *testing.T) {
 			return
 		}
 
-		if err := poll(failureTimeout, edge, "the exporter to report a rejected handshake", func() bool {
-			return edge.tlsFault() != ""
-		}); err != nil {
-			t.Fatalf("the gateway names a client CA and this edge offers nothing, so its handshake should have been refused; the edge's log reports no TLS fault at all: %v", err)
-		}
-		if err := staysFalse(certificateSilenceWindow, edge, "the uncertified marker reached the sink", func() bool {
+		// The probe above proved the gateway requires a client certificate.
+		// Hold the window open long enough for the sending queue to attempt
+		// delivery and for a couple of retry cycles to confirm that data
+		// never leaks through.
+		if err := staysFalse(certificateRejectionWindow, edge, "the uncertified marker reached the sink", func() bool {
 			return sinkContains(t, sink, uncertifiedMarker)
 		}); err != nil {
 			t.Fatalf("marker %s reached %s from an edge that offered no client certificate, which makes the certificate the other two claims supply decorative rather than load-bearing: %v",
