@@ -30,6 +30,7 @@ var requiredComponentNames = []string{
 	"redaction",
 	"resource",
 	"resource_detection",
+	"transform",
 	"file",
 }
 
