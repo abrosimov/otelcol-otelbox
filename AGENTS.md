@@ -35,7 +35,7 @@ the built binary from outside.
 
 | Path | Purpose |
 | --- | --- |
-| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. |
+| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream; `replaces` states transitive security floors. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `tools/ci/` | Tested Go checks for shared regions, built-binary contents and OCI runtime readiness. |
@@ -274,6 +274,21 @@ pin that disagrees. Go is pinned exactly, currently to 1.27.0, because 1.25.0
 mislinked this generated collector while the patched 1.25 toolchain built the
 same manifest successfully. Move the pin only under a reviewed change that has
 a green build job behind it.
+
+The image scan rejects a fixable HIGH or CRITICAL finding in the built binary,
+and a component pin cannot answer one that lives in a transitive dependency: the
+`gomod` line names the component, and OCB generates the `go.mod` that resolves
+everything under it. `builder.yaml`'s `replaces` block is where such a floor is
+stated, one entry per advisory, each naming its CVE and the first upstream
+version that fixes it. A floor is not a pin and not a capability change: it
+raises one module to a released version the scan accepts, and it is removed once
+a component pin requires that version or later on its own, because a replace
+that has outlived its advisory holds a dependency back where nobody is looking
+for it. Reachability does not decide this. `govulncheck` reads call paths and
+the image scan reads the binary's build information, so a module linked for one
+package is reported for an advisory against another; a finding the repository
+believes is genuinely not exploitable is answered with a VEX statement and
+evidence, never by widening the scan's severity or unfixed filters.
 
 Never create a release tag manually. A default-branch workflow run publishes
 `v<dist.version>` only when neither that release nor an orphan tag exists. Build
