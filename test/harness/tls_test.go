@@ -125,9 +125,17 @@ func (g gatewayChain) verifyServed(endpoint string) error {
 }
 
 // verifyRejectsUncertified connects to the gateway without offering a client
-// certificate and expects the handshake to be refused. A deterministic probe
+// certificate and expects the connection to be refused. A deterministic probe
 // instead of a log-file poll: it removes the gRPC reconnect-backoff timing
 // dependency that made the log-based check flaky on slow CI runners.
+//
+// A successful dial is not evidence of acceptance. Under TLS 1.3 the client
+// completes its handshake before the server has inspected the client
+// certificate, so Dial returns nil and the `certificate required` alert only
+// arrives as the first record afterwards. The probe therefore reads once: a
+// read error is the refusal, and only readable application data proves the
+// gateway let an uncertified peer through. Under TLS 1.2 the refusal still
+// surfaces at Dial, which the first branch keeps covering.
 func (g gatewayChain) verifyRejectsUncertified(endpoint string) error {
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: tlsProbeTimeout},
@@ -141,8 +149,22 @@ func (g gatewayChain) verifyRejectsUncertified(endpoint string) error {
 	if err != nil {
 		return nil
 	}
-	conn.Close()
-	return fmt.Errorf("the gateway at %s accepted a TLS handshake without a client certificate", endpoint)
+	defer conn.Close()
+
+	if err := conn.SetReadDeadline(time.Now().Add(tlsProbeTimeout)); err != nil {
+		return fmt.Errorf("setting a read deadline on the probe to %s: %w", endpoint, err)
+	}
+	switch _, err := conn.Read(make([]byte, 1)); {
+	case err == nil:
+		return fmt.Errorf("the gateway at %s served an uncertified peer", endpoint)
+	case os.IsTimeout(err):
+		// The gateway neither rejected the peer nor spoke to it. Silence is
+		// not a refusal: the connection stands open and a gRPC client would
+		// carry on with it.
+		return fmt.Errorf("the gateway at %s held an uncertified connection open without rejecting it", endpoint)
+	default:
+		return nil
+	}
 }
 
 // The optional second factor on the same leg, supplied only by the scenario
