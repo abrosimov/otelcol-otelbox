@@ -1,68 +1,14 @@
-// Renovate repository configuration for otelcol-otelbox: keeps the workflow's
-// actions and the image trust inputs current. Collector pins and auth-retry
-// wrapper dependencies move together under the release workflow's manual gate.
-// Runtime concerns (host, token, schedule, onboarding) live in the self-hosted
-// configuration, not here.
+// Renovate is enabled here and configured centrally: the fleet preset in
+// abrosimov/renovate-config decides quarantine, grouping, digest pinning,
+// security handling and automerge for every repository that extends it.
+//
+// The tag is part of the reference on purpose. A bare `github>owner/repo`
+// resolves to whatever that repository's default branch holds when Renovate
+// runs, so a policy change would arrive here unreviewed and unannounced.
+// Pinned, a new preset release arrives as a pull request that runs this
+// repository's own checks against the new policy first, and Renovate's
+// `renovate-config` manager raises that pull request itself.
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-
-  extends: [
-    'config:recommended',
-
-    // Keeps every workflow action pinned to a commit SHA with the release tag
-    // in a trailing comment, including actions added later at a bare tag.
-    'helpers:pinGitHubActionDigests',
-  ],
-
-  // Every update here changes what is compiled into a published binary or what
-  // the published image trusts, and only a human reading the smoke check and
-  // the edge -> gateway integration test can confirm delivery still works.
-  automerge: false,
-
-  // `minimumReleaseAge` alone only attaches a pending status check;
-  // `internalChecksFilter: 'strict'` is what actually suppresses the branch and
-  // pull request. It matches the default, but is set explicitly because a
-  // self-hosted global configuration can override that default for every
-  // repository it manages.
-  minimumReleaseAge: '7 days',
-  internalChecksFilter: 'strict',
-
-  // Hold an update when the datasource returns no release timestamp, so the
-  // ageing requirement cannot be bypassed. All datasources in use do carry
-  // timestamps today, so this is a backstop.
-  minimumReleaseAgeBehaviour: 'timestamp-required',
-
-  packageRules: [
-    {
-      // The wrappers import the standard exporters named by UPSTREAM_VERSION.
-      // Updating either module alone would defeat the manifest resolver's
-      // single Collector dependency set. Move both wrappers and builder.yaml in
-      // one reviewed change instead.
-      matchManagers: ['gomod'],
-      matchFileNames: ['internal/exporters/**/go.mod'],
-      enabled: false,
-    },
-
-    {
-      // `alpine` is in the Dockerfile only to supply the Mozilla trust store
-      // copied into a `scratch` image, and the gateway verifies every backend
-      // it dials, so a stale bundle decides which backends are reachable.
-      //
-      // Keep the patch tag for human provenance and pin its index digest so a
-      // rebuild cannot silently substitute different certificate bytes.
-      matchManagers: ['dockerfile'],
-      matchPackageNames: ['alpine'],
-      pinDigests: true,
-      addLabels: ['trust-store'],
-    },
-
-    {
-      // The Dockerfile frontend executes during the build, so its digest is
-      // part of the build trust boundary.
-      matchManagers: ['dockerfile'],
-      matchPackageNames: ['docker/dockerfile'],
-      pinDigests: true,
-      addLabels: ['build-toolchain'],
-    },
-  ],
+  extends: ['github>abrosimov/renovate-config#v2.0.0'],
 }
