@@ -35,10 +35,12 @@ the built binary from outside.
 
 | Path | Purpose |
 | --- | --- |
-| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream; `replaces` states transitive security floors. |
-| `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. |
+| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Carries no `replaces` block. |
+| `renovate.json5` | Extends the fleet preset. Dependency policy lives there, not here. |
+| `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
-| `tools/ci/` | Tested Go checks for shared regions, built-binary contents and OCI runtime readiness. |
+| `docs/` | Role and adoption notes. `redaction.md` is the canonical redaction carrier and threat boundary. |
+| `tools/ci/` | Tested Go checks for manifest resolution, shared regions, built-binary contents and OCI runtime readiness. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
@@ -77,12 +79,12 @@ An unset `${env:NAME}` logs a warning and expands to an empty value; decoding
 may then produce the target type's zero value. It is not a named load error.
 Consequences include unlimited `file_storage.max_size`, no sender splitting for
 `batch.max_size`, unlimited `max_concurrent_streams`, and `false` for booleans.
-`queue_size: 0` is rejected by validation.
+A zero `queue_size` is rejected by validation.
 
 Every numeric and boolean reference must therefore carry a `:-default` unless
 zero is deliberately safe and documented. Defaults apply only when a variable
 is absent, not when it is exported empty. Whole-value references retain the
-YAML-parsed type; embedded references such as `${env:OTELBOX_BIND_HOST}:4317`
+YAML-parsed type; embedded references such as `${env:OTELBOX_BIND_HOST}:<port>`
 are strings.
 
 `OTELBOX_STORAGE_DIR` uses `/dev/null/OTELBOX_STORAGE_DIR-is-required` as an
@@ -150,10 +152,10 @@ the one place where an absent value is deliberately safe rather than a fault:
 empty means no certificate is offered, so a deployment tunnelling the leg keeps
 working unchanged. Exactly one half of the pair is a named load error; a
 configured path that does not resolve is not, and fails the exporter at start
-instead. `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` defaults to `1h` because
-`configtls` defaults to `0`, which would pin a process to the material it
-started with — the pair is polled and re-read at the next handshake, not watched
-by fsnotify as the header file is. The gateway profile is unchanged: mTLS
+instead. `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` carries a bounded default
+because `configtls` defaults to never reloading, which would pin a process to
+the material it started with — the pair is polled and re-read at the next
+handshake, not watched by fsnotify as the header file is. The gateway profile is unchanged: mTLS
 terminates on whatever front end a deployment puts before it.
 
 Edge and host agent compress the gateway leg with `zstd` through
@@ -174,8 +176,9 @@ while every export is rejected.
 
 Every outbound exporter enables `retry_on_auth_failure`. gRPC
 `Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses retain the
-request and retry after `${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}`. This interval
-is separate from the 5–30 second transient backoff. The watched credential file
+request and retry after `${env:OTELBOX_AUTH_RETRY_INTERVAL}`, whose default the
+profiles carry. It is a separate, far longer interval than the exporter's
+transient backoff, which the profiles also state. The watched credential file
 is read again before a later attempt, so replacing it can drain the queue
 without restarting the Collector. Other permanent errors remain permanent so
 an invalid payload cannot pin a queue forever.
@@ -211,15 +214,19 @@ such as `api`.
 
 ### Edge
 
-- OTLP listens on `${OTELBOX_BIND_HOST}:4317` and `:4318`; self metrics use
-  port 8888. Ingest is capped at 1 MiB and sender batches at 1.5 MiB.
+- OTLP listens on `${OTELBOX_BIND_HOST}` over both gRPC and HTTP. Each role
+  owns a distinct self-metrics port; read the ports and the ingest and sender
+  batch caps from `config/edge.yaml`. The edge cap is the lowest of the three,
+  because its producers are local.
 - One persistent gateway queue blocks on overflow and retries indefinitely.
 - `resource_detection` stamps the local origin before redaction.
 
 ### Gateway
 
-- One authenticated OTLP receiver listens on ports 14319 and 14320; self
-  metrics use 8889. Ingest is capped at 2 MiB.
+- One authenticated OTLP receiver serves both gRPC and HTTP on role-owned
+  ports, deliberately not the default OTLP pair the edge uses. Ports and the
+  ingest cap are in `config/gateway.yaml`; the cap is above the edge's because
+  the gateway receives already-batched traffic.
 - Each logical all-signal recipient has one exporter, storage extension and WAL
   per signal, permitting independent queue and disk budgets.
 - The reference represents one all-signal gRPC recipient with the
@@ -238,7 +245,7 @@ such as `api`.
 ### Host agent
 
 - `host_metrics`, `prometheus/host` and selected `journald` units feed
-  metrics/log pipelines; self metrics use port 8890.
+  metrics/log pipelines; the self-metrics port is in `config/host-agent.yaml`.
 - The journald cursor and outbound queue use distinct storage extensions.
 - `journald` executes `journalctl`, so this role cannot run from the published
   `scratch` image.
@@ -250,7 +257,8 @@ such as `api`.
 
 ## Component names
 
-Use canonical v0.158 component types. In current profiles these include
+Use the canonical component types of the Collector release the manifest pins.
+In current profiles these include
 `otlp_grpc` and `otlp_http` for exporters, `resource_detection`, `host_metrics`,
 `filter`, `file_storage`, `healthcheckv2`, `headers_setter`,
 `bearertokenauth`, `prometheus` and `journald`. The OTLP receiver remains
@@ -270,25 +278,32 @@ load and conceal adoption drift.
 
 Upstream module versions never appear in the artefact version. The workflow
 derives OCB's version from the `otlpreceiver` pin and rejects any other `gomod`
-pin that disagrees. Go is pinned exactly, currently to 1.27.0, because 1.25.0
-mislinked this generated collector while the patched 1.25 toolchain built the
-same manifest successfully. Move the pin only under a reviewed change that has
-a green build job behind it.
+pin, `UPSTREAM_VERSION` file or wrapper Collector requirement that disagrees.
+Go is pinned exactly — never to a range — in the workflow's `setup-go` steps,
+which are the one place to read or change it. The exact pin exists because a Go
+patch release once mislinked this generated collector while the next patch built
+the same manifest successfully. The pin moves like any other dependency, on a
+green build.
 
-The image scan rejects a fixable HIGH or CRITICAL finding in the built binary,
-and a component pin cannot answer one that lives in a transitive dependency: the
-`gomod` line names the component, and OCB generates the `go.mod` that resolves
-everything under it. `builder.yaml`'s `replaces` block is where such a floor is
-stated, one entry per advisory, each naming its CVE and the first upstream
-version that fixes it. A floor is not a pin and not a capability change: it
-raises one module to a released version the scan accepts, and it is removed once
-a component pin requires that version or later on its own, because a replace
-that has outlived its advisory holds a dependency back where nobody is looking
-for it. Reachability does not decide this. `govulncheck` reads call paths and
-the image scan reads the binary's build information, so a module linked for one
-package is reported for an advisory against another; a finding the repository
-believes is genuinely not exploitable is answered with a VEX statement and
-evidence, never by widening the scan's severity or unfixed filters.
+Renovate owns every dependency and toolchain move, through the fleet preset
+`renovate.json5` extends. Quarantine, grouping, digest pinning, security
+handling and automerge are decided in that preset. A green pull request merges
+itself: the build, the contract checks, profile validation, the harness and both
+image checks are the review, and merging publishes nothing while `dist.version`
+is unchanged. Do not raise a dependency by hand ahead of it, and do not add a
+local override or a human gate in front of a check that already has a verdict.
+
+This repository declares its direct dependencies: the `require` blocks of
+`internal/exporters/*/go.mod` and the `gomod` pins above. Raise a version there
+and the generated module follows, because selection takes the maximum across the
+graph. A transitive dependency of an upstream component is not this repository's
+to pin. `replace` is forbidden — a version-form replacement overrides minimal
+version selection in both directions and downgrades as readily as it raises,
+reporting nothing when it does. Only a human adds one.
+
+The image scan rejects a fixable HIGH or CRITICAL finding in the built binary.
+Where it names a module this repository declares, raise it there. Neither the
+scan's severity nor its unfixed filter is widened to make a report go away.
 
 Never create a release tag manually. A default-branch workflow run publishes
 `v<dist.version>` only when neither that release nor an orphan tag exists. Build
@@ -306,8 +321,8 @@ Image release readiness is a separate claim from binary, profile and harness
 readiness. Hadolint is static analysis, and `components` inventories the linked
 binary without proving that the packaged runtime can traverse its rootfs. The
 Go-owned image smoke must load a configuration from `/etc/otelbox`, load the
-system CA bundle and answer readiness as the declared `10001:10001` user under
-the runtime restrictions. Run it against both the locally built image before
+system CA bundle and answer readiness as the non-root user the Dockerfile
+declares, under the runtime restrictions. Run it against both the locally built image before
 push and the immutable registry digest after push, following build -> boot ->
 probe -> kill with unconditional cleanup. A release depends on both image
 checks.
@@ -320,7 +335,8 @@ playbook-owned binary and launchd agent, not Homebrew.
 
 ## Verification
 
-Build with OCB v0.158.0 and Go 1.27.0, then run:
+Build with the OCB version `manifest resolve` derives from the manifest and the
+Go version the workflow's `setup-go` steps pin, then run:
 
 ```console
 go -C tools/ci run ./cmd/otelbox-ci binary check \
@@ -330,9 +346,11 @@ go -C tools/ci run ./cmd/otelbox-ci shared check \
 go -C tools/ci run ./cmd/otelbox-ci image smoke \
   --image <tag-or-digest> --config ../../test/config/image-smoke.yaml
 ./_build/otelcol-otelbox validate --config config/<role>.yaml
-go test -C test/harness . -count=1 -timeout 15m -v \
-  -args -otelcol-binary "$PWD/_build/otelcol-otelbox"
 ```
+
+Then run the harness with the flags the workflow's "Run the end-to-end harness"
+step uses, pointing `-otelcol-binary` at the binary just built. Those flags
+live there alone; a second copy of the timeout would drift from it.
 
 Supply every required role environment value for `validate`. Run host-agent
 validation on Linux because the journald receiver rejects other operating
