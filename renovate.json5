@@ -10,5 +10,5 @@
 // `renovate-config` manager raises that pull request itself.
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  extends: ['github>abrosimov/renovate-config#v2.0.0'],
+  extends: ['github>abrosimov/renovate-config#v2.1.1'],
 }
