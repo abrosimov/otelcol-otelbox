@@ -61,7 +61,7 @@
 
   packageRules: [
     {
-      description: 'One Collector release is one branch: v0 and v1 core modules, contrib components, the manifest and the adaptation files move together, because the checks accept nothing in between. Placed after the preset so it overrides both ecosystem and pre-1.0 grouping. Automerge and majors stay the preset\'s decision: a branch automerges only when every member does, and the pre-1.0 members do not',
+      description: 'One Collector release is one branch: v0 and v1 core modules, contrib components, the manifest and the adaptation files move together, because the checks accept nothing in between. Placed after the preset so it overrides both ecosystem and pre-1.0 grouping. Automerge is restored here, overriding the preset\'s pre-1.0 withholding: the build, the contract checks, profile validation, the harness and both image checks are this release\'s review, and merging publishes nothing while `dist.version` is unchanged. Majors stay the preset\'s dashboard decision',
       matchDatasources: ['go'],
       matchPackageNames: [
         'go.opentelemetry.io/collector',
@@ -71,6 +71,7 @@
       matchUpdateTypes: ['minor', 'patch'],
       groupName: 'OpenTelemetry Collector',
       groupSlug: 'otel-collector',
+      automerge: true,
     },
   ],
 }
