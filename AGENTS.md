@@ -287,7 +287,11 @@ green build.
 
 Renovate owns every dependency and toolchain move, through the fleet preset
 `renovate.json5` extends. Quarantine, grouping, digest pinning, security
-handling and automerge are decided in that preset. A green pull request merges
+handling and automerge are decided in that preset. The one local addition is
+the Collector contract the preset cannot know: regex managers for the
+`builder.yaml` pins and `UPSTREAM_VERSION` files, and a single group for every
+core and contrib Collector module, so one upstream release arrives as one pull
+request that `manifest resolve` can accept. A green pull request merges
 itself: the build, the contract checks, profile validation, the harness and both
 image checks are the review, and merging publishes nothing while `dist.version`
 is unchanged. Do not raise a dependency by hand ahead of it, and do not add a

@@ -8,7 +8,70 @@
 // Pinned, a new preset release arrives as a pull request that runs this
 // repository's own checks against the new policy first, and Renovate's
 // `renovate-config` manager raises that pull request itself.
+//
+// The additions below are the Collector's own contract, not fleet policy.
+// `manifest resolve` requires every `gomod` pin in builder.yaml, every
+// `UPSTREAM_VERSION` file and every v0 Collector requirement in the wrapper
+// modules to name one release, and the v1 requirements to name one other. The
+// preset cannot know either, so without them a Collector release arrives in
+// two halves — v1 modules in `go modules`, v0 modules in `pre-1.0 minor
+// updates` — each dragging part of the other through `gomodTidy`, and neither
+// touching the manifest. Both halves then fail the same check.
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   extends: ['github>abrosimov/renovate-config#v2.1.1'],
+
+  customManagers: [
+    {
+      description: 'OCB manifest pins of upstream core and contrib components',
+      customType: 'regex',
+      managerFilePatterns: ['/^builder\\.yaml$/'],
+      matchStrings: [
+        '- gomod: (?<depName>(?:go\\.opentelemetry\\.io/collector|github\\.com/open-telemetry/opentelemetry-collector-contrib)/\\S+) (?<currentValue>v\\S+)',
+      ],
+      datasourceTemplate: 'go',
+    },
+    {
+      description: 'OCB manifest pins of the local wrappers. They are resolved through `path:`, so no release of their own exists to look up; the check requires the Collector release they adapt',
+      customType: 'regex',
+      managerFilePatterns: ['/^builder\\.yaml$/'],
+      matchStrings: [
+        '- gomod: github\\.com/abrosimov/otelcol-otelbox/exporter/(?<wrapped>otlp|otlphttp)authretry (?<currentValue>v\\S+)',
+      ],
+      depNameTemplate: 'go.opentelemetry.io/collector/exporter/{{{wrapped}}}exporter',
+      datasourceTemplate: 'go',
+    },
+    {
+      description: 'Collector release the gRPC wrapper adapts',
+      customType: 'regex',
+      managerFilePatterns: ['/^internal/exporters/otlpauthretry/UPSTREAM_VERSION$/'],
+      matchStrings: ['^(?<currentValue>v\\S+)\\s*$'],
+      depNameTemplate: 'go.opentelemetry.io/collector/exporter/otlpexporter',
+      datasourceTemplate: 'go',
+    },
+    {
+      description: 'Collector release the HTTP wrapper adapts',
+      customType: 'regex',
+      managerFilePatterns: ['/^internal/exporters/otlphttpauthretry/UPSTREAM_VERSION$/'],
+      matchStrings: ['^(?<currentValue>v\\S+)\\s*$'],
+      depNameTemplate: 'go.opentelemetry.io/collector/exporter/otlphttpexporter',
+      datasourceTemplate: 'go',
+    },
+  ],
+
+  packageRules: [
+    {
+      description: 'One Collector release is one branch: v0 and v1 core modules, contrib components, the manifest and the adaptation files move together, because the checks accept nothing in between. Placed after the preset so it overrides both ecosystem and pre-1.0 grouping. Automerge is restored here, overriding the preset\'s pre-1.0 withholding: the build, the contract checks, profile validation, the harness and both image checks are this release\'s review, and merging publishes nothing while `dist.version` is unchanged. Majors stay the preset\'s dashboard decision',
+      matchDatasources: ['go'],
+      matchPackageNames: [
+        'go.opentelemetry.io/collector',
+        'go.opentelemetry.io/collector/**',
+        'github.com/open-telemetry/opentelemetry-collector-contrib/**',
+      ],
+      matchUpdateTypes: ['minor', 'patch'],
+      groupName: 'OpenTelemetry Collector',
+      groupSlug: 'otel-collector',
+      automerge: true,
+    },
+  ],
 }
