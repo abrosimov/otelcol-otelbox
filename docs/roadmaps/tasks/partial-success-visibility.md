@@ -81,17 +81,33 @@ Read in the Langfuse source at `langfuse/langfuse@4d851c2` (2026-10-22):
   a malformed batch whole with 400, answers 403 when ingestion is suspended for
   usage, 413 above its body limit, 429 with `Retry-After` for its rate limit,
   503 when its object store throttles and 500 for other publishing failures.
-- **Loss after acknowledgement.** Spans can still be dropped after a 200, in
-  the asynchronous worker: schema failures, per-event write errors, masking
-  failures and ClickHouse writes that exhaust their retries are only logged.
+- **Loss after acknowledgement.** The 200 follows the upload of the raw batch
+  to the event bucket (`LANGFUSE_S3_EVENT_UPLOAD_BUCKET`); an asynchronous
+  worker then converts it. Records can still fail to reach ClickHouse there:
+
+  | Case | Configurable | Signal |
+  | --- | --- | --- |
+  | An observation fails the ingestion schema | No; the schema is fixed | Metric `langfuse.ingestion.otel.observation_parse_failure` and one sample warning per batch |
+  | Building or buffering one event record throws | No; a deterministic conversion failure | Error log naming the span ID |
+  | The ingestion-masking callback fails | Yes. Masking is an enterprise feature that runs only when `LANGFUSE_INGESTION_MASKING_CALLBACK_URL` is set; it fails open by default and drops the batch only when `LANGFUSE_INGESTION_MASKING_CALLBACK_FAIL_CLOSED=true` | Warning naming the object key; masking metrics |
+  | A ClickHouse insert fails on every attempt | Attempt count only, `LANGFUSE_INGESTION_CLICKHOUSE_MAX_ATTEMPTS` (default 3) | Metric `langfuse.queue.clickhouse_writer.rows_dropped`; dropped IDs logged |
+  | The whole job fails, for example Redis, Postgres or the object store unavailable | Not by environment; the queue makes 6 attempts with exponential backoff from 5 s | The job stays in the queue's failed set |
+
+  Redaction is this repository's, so a deployment that leaves the masking
+  callback unset has no masking case. Because the raw batch stays in the event
+  bucket, an operator of a self-hosted Langfuse can replay a failed batch with
+  `worker/src/scripts/replayIngestionEventsV2`, subject to that bucket's
+  retention.
 
 For Langfuse the middleware above would therefore report nothing: the
 recipient-side loss there is asynchronous and invisible to any OTLP client.
-Only the producer engine's reconciliation against Langfuse's API, replaying
-complete spans under their original span IDs, closes it. The middleware stays
-worth building for recipients that do return partial success. The 403 suspension
-is retried on the long authentication interval, so a usage stop holds data in
-the WAL rather than dropping it.
+Two routes close it: the Langfuse operator alerting on the signals above and
+replaying from the event bucket, or the producer engine reconciling against
+Langfuse's API and replaying complete spans under their original span IDs. Only
+the second is available without operating Langfuse. The middleware stays worth
+building for recipients that do return partial success. The 403 suspension is
+retried on the long authentication interval, so a usage stop holds data in the
+WAL rather than dropping it.
 
 ## Evidence to attach
 
