@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Method-availability claim: which signals exist now, which are missing, and where each would come from. |
 | Why not a ticket | "Add disk alerts" omits which quantity reaches its limit first and how its measurement reaches the backend while the WAL is filling. |
 | Acceptance probe | For each role and platform a named metric, its unit and source, a threshold below the hard limit, and a staleness rule for when the node's telemetry stops arriving. |
-| Next use | Compare: put the macOS options to the owner; keep the hard-limit safety claim below as a separate test row. |
+| Next use | Closed by option 1 (owner's choice, 2.5.0); alert thresholds are documented in `docs/reference/edge.md` and belong to the deployment. |
 
 ### Evidence
 
@@ -40,6 +40,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | `otelcol_exporter_queue_size` and `otelcol_exporter_queue_capacity` exist; under `sizer: bytes` they report bytes although they declare `{batch}`. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:126-149` | supported by inspected source |
 | filestorage exports no metric for file size, free pages, `max_size` hits or compaction; it only logs. | `github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage@v0.162.0` (no metrics in `internal/metadata`) | supported by inspected source |
 | The Linux host agent reports `system.filesystem.usage` per mount point. | `config/host-agent.yaml` `host_metrics.filesystem` | supported by inspected source |
+| The edge now reports `system.filesystem.usage` and `system.filesystem.utilization` with `mountpoint` through `metrics/self`, on macOS and Linux alike. | `config/edge.yaml` `host_metrics/storage`; `TestEdgeReportsStorageVolumeSpace` | proven by test |
 | Edge self-metrics leave through the same `otlp_grpc/gateway` queue whose fill they report. | `config/edge.yaml` `metrics/self` pipeline | supported by inspected source |
 | At `max_size`, `Offer` returns `storage.ErrStorageFull` and the producer gets an error, not success. | `github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage@v0.162.0/client.go:345-350`; `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:308-313` | supported by inspected source |
 | After a failed write the queue does not roll back its in-memory size counters, so free capacity is understated until the queue fully drains. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:286-313` | supported by inspected source |
@@ -48,7 +49,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 
 ### Interpretation
 
-Queue fill is measurable; storage file size and volume space are not measurable from the collector itself, and on macOS no role measures them today. Because the warning travels through the queue it describes, the threshold must fire early and the backend must alert on absent data.
+Queue fill and volume space are now measurable on every edge, macOS included; the bbolt file size itself is not. Because the warning travels through the queue it describes, the threshold must fire early and the backend must alert on absent data.
 
 ### Proposal
 
@@ -69,4 +70,4 @@ Upstream paths are module paths in the Go module cache at the versions
 proven by test, supported by inspected source, assumed from external
 contract, not yet proven.
 
-Option choice is the owner's. The hard-limit safety claim depends on PC-13.
+The owner chose option 1 on 2026-10-22. The hard-limit safety claim depends on PC-13.

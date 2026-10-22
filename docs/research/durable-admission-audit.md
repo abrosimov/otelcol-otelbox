@@ -139,7 +139,9 @@ larger than the queue. Telling them apart needs telemetry
   `otelcol_exporter_queue_capacity`. Under the bytes sizer they report bytes,
   although they declare the unit `{batch}`.
 - `file_storage` exports no metrics.
-- On macOS, no role measures free disk.
+- On macOS, no role measured free disk on 2.4.2; this PR adds
+  `host_metrics/storage` to the edge, which reports filesystem usage and
+  utilisation per mount point on macOS and Linux (proven by test).
 - The edge's own self-metrics travel through the queue they describe.
 
 Two further facts about the queue and storage limits:
@@ -252,7 +254,7 @@ Open protocol questions, not answered by standard OTLP here:
    - PC-14's restart window;
    - recipient answers that remain permanent (4xx other than 401, 403 and
      429; partial success);
-   - no free-disk or storage-size telemetry on macOS.
+   - no telemetry for the bbolt file size against `max_size`.
 3. **Are code changes needed?** None for admission. One for delivery, made in
    this PR on the owner's decision: server errors retry with backoff through
    the existing wrapper seam (`dist.version` 2.5.0, a minor capability). The
@@ -279,9 +281,10 @@ Open protocol questions, not answered by standard OTLP here:
    with backoff; a deterministic server error now holds its queue, so the
    queue-fill alert of recommendation 2 is what reports it
    ([PC-07](problem-cards/PC-07-permanent-error-after-admission.md)).
-2. **Make early warning a safety requirement while PC-13 stands.** Alert on
-   `queue_size / queue_capacity` well below 1, alert on missing telemetry from
-   a node, and choose a macOS disk-space source. The options are in
+2. **Make early warning a safety requirement while PC-13 stands.** The
+   signals now exist on every edge, macOS included; the deployment must alert
+   on queue fill, on the WAL volume's utilisation and on a silent edge. The
+   thresholds are in the edge reference's capacity section and
    [PC-04](problem-cards/PC-04-capacity-early-warning.md).
 3. **Report PC-13 and PC-14 upstream.** For PC-13, propose skipping a failed
    read without deleting the item. For PC-14, propose making restart
