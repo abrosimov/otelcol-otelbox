@@ -1,0 +1,6 @@
+# Semantic-convention keys that the redaction/secrets blocked-key patterns
+# mask on purpose. One key, a tab, and the reason. `otelbox-ci redaction
+# check` requires each to stay a convention key the patterns match.
+message_content.signature	Opaque vendor signature over a content block; no recipient needs it and it is credential-shaped.
+tool_call.reasoning_signature	Opaque vendor signature over model reasoning; no recipient needs it and it is credential-shaped.
+llm.token_count.prompt_details	Prefix constant in the OpenInference module, not an attribute a producer sets.

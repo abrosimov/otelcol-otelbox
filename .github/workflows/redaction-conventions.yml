@@ -1,0 +1,101 @@
+name: redaction-conventions
+
+# Holds the shared redaction/secrets key list to the semantic conventions that
+# producers and recipients use. The blocked-key patterns mask any key with a
+# `token`, `signature` or similar segment, so a convention that names a model
+# token count with such a segment is masked unless the profiles exempt it
+# (`ignored_keys`) or record it as deliberately masked
+# (`tools/ci/redaction-exceptions.tsv`). The check reads the current release of
+# each convention rather than a pinned copy: its job is to report drift when a
+# convention adds, renames or drops a key, so it also runs weekly.
+#
+# A separate workflow on purpose: a scheduled run of the build workflow would
+# satisfy its publication gates on the default branch.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+  push:
+    branches: [master]
+    paths:
+      - config/**
+      - tools/ci/**
+      - .github/workflows/redaction-conventions.yml
+  pull_request:
+    paths:
+      - config/**
+      - tools/ci/**
+      - .github/workflows/redaction-conventions.yml
+
+permissions: {}
+
+concurrency:
+  group: redaction-conventions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conventions:
+    name: Redaction keys against the semantic conventions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Fetch the current conventions
+        id: fetch
+        run: |
+          sources="${RUNNER_TEMP}/conventions"
+          mkdir -p "$sources"
+
+          # OpenInference: the Python constants module of the newest
+          # semantic-conventions package release.
+          openinference_tag="$(git ls-remote --tags --refs https://github.com/Arize-ai/openinference \
+            'refs/tags/python-openinference-semantic-conventions-v*' \
+            | sed 's#.*refs/tags/##' | sort -V | tail -n 1)"
+          curl -fsSL -o "${sources}/openinference.py" \
+            "https://raw.githubusercontent.com/Arize-ai/openinference/${openinference_tag}/python/openinference-semantic-conventions/src/openinference/semconv/trace/__init__.py"
+
+          # OpenTelemetry GenAI: its own repository has no releases yet, so the
+          # default branch is the current convention.
+          git clone --quiet --depth 1 https://github.com/open-telemetry/semantic-conventions-genai "${sources}/genai"
+          genai_commit="$(git -C "${sources}/genai" rev-parse HEAD)"
+
+          # The deprecated GenAI registry in the main repository still names
+          # keys older instrumentations emit, such as gen_ai.token.type.
+          semconv_tag="$(git ls-remote --tags --refs https://github.com/open-telemetry/semantic-conventions 'refs/tags/v1.*' \
+            | sed 's#.*refs/tags/##' | sort -V | tail -n 1)"
+          curl -fsSL -o "${sources}/semconv-genai-deprecated.yaml" \
+            "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/${semconv_tag}/model/gen-ai/deprecated/registry-deprecated.yaml"
+
+          {
+            echo "openinference: ${openinference_tag}"
+            echo "semantic-conventions-genai: ${genai_commit}"
+            echo "semantic-conventions: ${semconv_tag}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "sources=${sources}" >> "$GITHUB_OUTPUT"
+
+      - name: Check every role profile
+        working-directory: tools/ci
+        env:
+          SOURCES: ${{ steps.fetch.outputs.sources }}
+        run: |
+          semconv_args=()
+          for registry in "${SOURCES}"/genai/model/*/registry.yaml "${SOURCES}/semconv-genai-deprecated.yaml"; do
+            semconv_args+=(--semconv "$registry")
+          done
+          for profile in edge gateway host-agent; do
+            go run ./cmd/otelbox-ci redaction check \
+              --profile "../../config/${profile}.yaml" \
+              --exceptions redaction-exceptions.tsv \
+              --openinference "${SOURCES}/openinference.py" \
+              "${semconv_args[@]}"
+          done

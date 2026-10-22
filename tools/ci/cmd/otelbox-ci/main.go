@@ -24,7 +24,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: otelbox-ci shared check | binary check | image smoke | manifest resolve [options]")
+		return fmt.Errorf("usage: otelbox-ci shared check | binary check | image smoke | manifest resolve | redaction check [options]")
 	}
 
 	switch args[0] + " " + args[1] {
@@ -36,6 +36,8 @@ func run(args []string, stdout io.Writer) error {
 		return runImageSmoke(args[2:], stdout)
 	case "manifest resolve":
 		return runManifestResolve(args[2:], stdout)
+	case "redaction check":
+		return runRedactionCheck(args[2:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0]+" "+args[1])
 	}
@@ -160,4 +162,61 @@ func runBinaryCheck(args []string, stdout io.Writer) error {
 	}
 
 	return contract.CheckBinary(manifestFile, components, stdout)
+}
+
+func runRedactionCheck(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("redaction check", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	profile := flags.String("profile", "config/edge.yaml", "role profile carrying the shared redaction/secrets block")
+	exceptionsPath := flags.String("exceptions", "tools/ci/redaction-exceptions.tsv", "convention keys deliberately left masked")
+	var openInference stringList
+	var semconv stringList
+	flags.Var(&openInference, "openinference", "OpenInference Python semantic-conventions module")
+	flags.Var(&semconv, "semconv", "semantic-conventions registry YAML")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("redaction check does not accept positional arguments")
+	}
+	if len(openInference)+len(semconv) == 0 {
+		return fmt.Errorf("redaction check needs at least one --openinference or --semconv source")
+	}
+
+	keys, err := contract.ReadRedactionKeys(*profile)
+	if err != nil {
+		return err
+	}
+	exceptions, err := contract.ReadRedactionExceptions(*exceptionsPath)
+	if err != nil {
+		return err
+	}
+	var conventions []string
+	for _, source := range []struct {
+		paths   []string
+		extract func(io.Reader) ([]string, error)
+	}{
+		{openInference, contract.ExtractOpenInferenceKeys},
+		{semconv, contract.ExtractSemconvKeys},
+	} {
+		for _, path := range source.paths {
+			file, err := os.Open(path)
+			if err != nil {
+				return fmt.Errorf("open convention source: %w", err)
+			}
+			extracted, extractErr := source.extract(file)
+			closeErr := file.Close()
+			if extractErr != nil {
+				return fmt.Errorf("read convention source %s: %w", path, extractErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close convention source %s: %w", path, closeErr)
+			}
+			if len(extracted) == 0 {
+				return fmt.Errorf("convention source %s yielded no attribute keys; its format may have changed", path)
+			}
+			conventions = append(conventions, extracted...)
+		}
+	}
+	return contract.CheckRedactionConventions(keys, conventions, exceptions, stdout)
 }

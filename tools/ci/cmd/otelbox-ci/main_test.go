@@ -17,6 +17,8 @@ func TestRunRejectsIncompleteAndUnknownCommands(t *testing.T) {
 		{name: "missing image", args: []string{"image", "smoke"}},
 		{name: "unexpected image argument", args: []string{"image", "smoke", "extra"}},
 		{name: "unexpected manifest argument", args: []string{"manifest", "resolve", "extra"}},
+		{name: "redaction without sources", args: []string{"redaction", "check"}},
+		{name: "unexpected redaction argument", args: []string{"redaction", "check", "extra"}},
 	}
 
 	for _, test := range tests {
