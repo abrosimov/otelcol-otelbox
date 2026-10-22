@@ -1,3 +1,13 @@
+---
+note_id: "20261022090600"
+created: 2026-10-22
+type: note
+subtype: roadmap-item
+language: en
+retention: active
+status: planned
+priority: low
+---
 # Task: define a safe container-metrics boundary
 
 ## Status

@@ -1,3 +1,13 @@
+---
+note_id: "20261022090500"
+created: 2026-10-22
+type: note
+subtype: roadmap-item
+language: en
+retention: active
+status: in-progress
+priority: medium
+---
 # Roadmap
 
 This roadmap separates the supported product contract from experiments and

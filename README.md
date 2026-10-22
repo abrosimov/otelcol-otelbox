@@ -54,7 +54,7 @@ location are supplied through `${env:...}` references.
 All roles apply the same bounded credential redaction before export. This is
 defence in depth rather than a general PII guarantee; the exact inspected
 carriers, blind spots and producer duties are in the
-[credential redaction boundary](docs/redaction.md). Every network exporter uses
+[credential redaction boundary](docs/reference/redaction.md). Every network exporter uses
 a bounded `file_storage` sending queue and retries transient failures
 indefinitely. Edge and gateway queues block their OTLP callers when full so
 those callers can retry. The host agent cannot back-pressure scrapers; it
@@ -82,7 +82,7 @@ producer that cannot set it but whose stream the local collector can already
 tell apart — a dedicated listener, a named scrape job, a journald unit set —
 2.3.0 links the `resource` processor without wiring it anywhere. A deployment
 renders its own instance on exactly that pipeline; see
-[stamping the route marker](docs/gateway.md#stamping-the-route-marker-where-the-producer-cannot).
+[stamping the route marker](docs/reference/gateway.md#stamping-the-route-marker-where-the-producer-cannot).
 
 The binary deliberately does not link the `batch` processor. It acknowledges
 upstream before its in-memory batch reaches the exporter and logs, rather than
@@ -107,12 +107,12 @@ forbidden in a rendered deployment.
 
 Required string and path variables are documented in the role guides:
 
-- [Edge](docs/edge.md)
-- [Gateway](docs/gateway.md)
-- [Host agent](docs/host-agent.md)
-- [Credential redaction boundary](docs/redaction.md)
-- [Adopting 2.0](docs/adoption.md)
-- [Roadmap](docs/roadmap.md)
+- [Edge](docs/reference/edge.md)
+- [Gateway](docs/reference/gateway.md)
+- [Host agent](docs/reference/host-agent.md)
+- [Credential redaction boundary](docs/reference/redaction.md)
+- [Adopting 2.0](docs/reference/adoption.md)
+- [Roadmap](docs/roadmaps/roadmap.md)
 
 ## Build and verify locally
 
@@ -192,7 +192,7 @@ literals.
 
 The version describes the consumer contract: configuration-shape breaks are
 major, newly available capabilities are minor, and a rebuild over the same
-component/configuration contract is patch. See [Adopting 2.0](docs/adoption.md)
+component/configuration contract is patch. See [Adopting 2.0](docs/reference/adoption.md)
 for the incompatible configuration changes and atomic rollout guidance.
 
 ## Installation boundaries

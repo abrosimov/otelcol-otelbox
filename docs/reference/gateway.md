@@ -1,8 +1,16 @@
+---
+note_id: "20261022090100"
+created: 2026-10-22
+type: note
+subtype: reference
+language: en
+retention: active
+---
 # Operating the gateway role
 
 The gateway authenticates one OTLP ingress, redacts accepted telemetry and
 persists each signal to every eligible required recipient. Load
-[the profile](../config/gateway.yaml) on its own:
+[the profile](../../config/gateway.yaml) on its own:
 
 ```console
 otelcol-otelbox --config config/gateway.yaml

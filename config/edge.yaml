@@ -151,8 +151,9 @@ processors:
   # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
   # A bounded credential deny-list, not a general PII scrubber. It scans
   # attribute keys and string values plus scalar and structured log bodies; it
-  # cannot inspect every OTLP string carrier. docs/redaction.md owns the exact
-  # coverage boundary and producer obligations. Add patterns in every profile.
+  # cannot inspect every OTLP string carrier. docs/reference/redaction.md owns
+  # the exact coverage boundary and producer obligations. Add patterns in every
+  # profile.
   redaction/secrets:
     allow_all_keys: true
     # Preserve non-string attribute types. Nested map/slice attributes are a

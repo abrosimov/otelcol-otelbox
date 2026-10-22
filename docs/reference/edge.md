@@ -1,8 +1,16 @@
+---
+note_id: "20261022090000"
+created: 2026-10-22
+type: note
+subtype: reference
+language: en
+retention: active
+---
 # Operating the edge role
 
 The edge accepts OTLP from local applications, applies origin detection and
 redaction, persists outbound data and sends it to one authenticated gateway.
-Load [the profile](../config/edge.yaml) on its own:
+Load [the profile](../../config/edge.yaml) on its own:
 
 ```console
 otelcol-otelbox --config config/edge.yaml

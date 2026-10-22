@@ -1,3 +1,11 @@
+---
+note_id: "20261022090300"
+created: 2026-10-22
+type: note
+subtype: reference
+language: en
+retention: active
+---
 # Credential redaction boundary
 
 `redaction/secrets` is defence in depth against credentials accidentally

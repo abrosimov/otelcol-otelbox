@@ -1,9 +1,17 @@
+---
+note_id: "20261022090200"
+created: 2026-10-22
+type: note
+subtype: reference
+language: en
+retention: active
+---
 # Operating the host-agent role
 
 The host agent collects the machine's own metrics, selected journal units,
 neighbouring Prometheus targets and its own Collector metrics.
 It redacts and persists them before sending to the gateway. Load
-[the profile](../config/host-agent.yaml) on its own:
+[the profile](../../config/host-agent.yaml) on its own:
 
 ```console
 otelcol-otelbox --config config/host-agent.yaml
