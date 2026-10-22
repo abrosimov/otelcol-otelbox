@@ -27,7 +27,7 @@ type recipientScenario struct {
 
 // startRecipientScenario starts the selected-traces double and a gateway that
 // exports to it, and returns once the gateway answers.
-func startRecipientScenario(t *testing.T, name string) *recipientScenario {
+func startRecipientScenario(t *testing.T, name string, extraEnv map[string]string) *recipientScenario {
 	t.Helper()
 
 	state := t.TempDir()
@@ -50,6 +50,9 @@ func startRecipientScenario(t *testing.T, name string) *recipientScenario {
 		"OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT": "127.0.0.1:34398",
 	}
 	contract.addEnv(env)
+	for key, value := range extraEnv {
+		env[key] = value
+	}
 	scenario.spec = collectorSpec{
 		name:     name,
 		stateDir: state,
@@ -107,7 +110,7 @@ func (s *recipientScenario) postSelected(t *testing.T, marker string) {
 // the answer. Delivery is at least once, so the restarted gateway must send it
 // again; a second copy is the expected outcome, not a defect.
 func TestGatewayResendsWhenRecipientAcknowledgementIsLost(t *testing.T) {
-	scenario := startRecipientScenario(t, "gateway-before-lost-ack")
+	scenario := startRecipientScenario(t, "gateway-before-lost-ack", nil)
 	collectors := []*collector{scenario.gateway}
 	defer func() { scenario.dumpOnFailure(t, collectors...) }()
 
@@ -145,7 +148,7 @@ func TestGatewayResendsWhenRecipientAcknowledgementIsLost(t *testing.T) {
 // loss is visible in otelcol_exporter_send_failed and the "Dropping data"
 // log line. If the classification changes, this test must change with it.
 func TestRecipientHTTP500DropsAnAdmittedRecord(t *testing.T) {
-	scenario := startRecipientScenario(t, "gateway-recipient-500")
+	scenario := startRecipientScenario(t, "gateway-recipient-500", nil)
 	defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
 
 	marker := "otelbox-ci-recipient-500-" + randomHex(t, 8)
@@ -180,7 +183,7 @@ func TestRecipientHTTP500DropsAnAdmittedRecord(t *testing.T) {
 // response is logged and counted as sent, and the rejected span is not
 // retried.
 func TestRecipientPartialSuccessCountsAsDelivered(t *testing.T) {
-	scenario := startRecipientScenario(t, "gateway-recipient-partial")
+	scenario := startRecipientScenario(t, "gateway-recipient-partial", nil)
 	defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
 
 	// ExportTraceServiceResponse{partial_success: {rejected_spans: 1, error_message}}.
