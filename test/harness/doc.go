@@ -60,9 +60,9 @@
 // a metric point, each sent once over OTLP/HTTP and once over OTLP/gRPC and
 // accepted while the gateway is unavailable, survive an edge SIGKILL and are
 // delivered after the gateway and edge start. The gRPC calls use the
-// standard-library client in grpc_test.go. The forced kill is the assertion's boundary: a
-// graceful shutdown would flush an in-memory processor batch and could let a
-// non-durable pipeline pass.
+// standard-library client in grpc_test.go. The forced kill is the assertion's
+// boundary: a graceful shutdown would flush an in-memory processor batch and
+// could let a non-durable pipeline pass.
 //
 // TestGatewayPersistsSelectedTraceBeforeAcknowledgement applies the same
 // SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
@@ -96,6 +96,17 @@
 // file_storage max_size while the gateway is down. The first record that does
 // not fit must be refused, not acknowledged, and every record acknowledged
 // before it must reach the sink once the gateway returns.
+//
+// TestGatewayResendsWhenRecipientAcknowledgementIsLost kills the gateway after
+// the selected-traces recipient received a record but before it answered; the
+// restarted gateway must send the record again. A duplicate is the contract.
+//
+// TestRecipientHTTP500DropsAnAdmittedRecord and
+// TestRecipientPartialSuccessCountsAsDelivered pin what the pinned HTTP
+// exporter does with two recipient answers: one HTTP 500 drops an admitted
+// record as permanent, and a partial success is logged, counted as sent and
+// not retried. Both describe current behaviour, not the desired contract; the
+// audit in docs/research records the decision they wait on.
 //
 // TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
 // exercises the `resource` processor, which the binary links and no role profile
