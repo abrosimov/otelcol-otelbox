@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Method-availability claim: a stdlib-only client can speak unary gRPC over unencrypted HTTP/2 with hand-encoded protobuf. |
 | Why not a ticket | Adding grpc-go would break the harness's stdlib-only contract. |
 | Acceptance probe | A gRPC export acknowledged while the downstream is down survives SIGKILL, for edge and gateway, and the client observes the gRPC status. |
-| Next use | P2W-ready: implement the stdlib gRPC seam and the durability tests. |
+| Next use | Closed for the receiving use. |
 
 ### Evidence
 
@@ -39,11 +39,11 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | --- | --- | --- |
 | Harness posts use `postOTLPJSON` only. | `test/harness/otlp_test.go:304-320` | supported by inspected source |
 | The gRPC service uses the same `Export` functions as HTTP. | `go.opentelemetry.io/collector/receiver/otlpreceiver@v0.162.0/otlp.go:96-113` | supported by inspected source |
-| gRPC ingress durability after SIGKILL. | no test | not yet proven |
+| Logs, spans and metric points acknowledged over OTLP/gRPC survive SIGKILL at the edge and the gateway; the gateway answers a tokenless gRPC export with `Unauthenticated`. | `TestEdgePersistsAcceptedDataBeforeAcknowledgement`, `TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement`; client in `test/harness/grpc_test.go` | proven by test |
 
 ### Interpretation
 
-Source makes the protocols equivalent behind `Export`, but the transport layer (framing, compression, status mapping) is untested end to end.
+The seam is a standard-library unary gRPC client; compression on the producer leg is not exercised and stays covered by source only.
 
 ## Sources And Limits
 

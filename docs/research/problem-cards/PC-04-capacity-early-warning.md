@@ -43,7 +43,8 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Edge self-metrics leave through the same `otlp_grpc/gateway` queue whose fill they report. | `config/edge.yaml` `metrics/self` pipeline | supported by inspected source |
 | At `max_size`, `Offer` returns `storage.ErrStorageFull` and the producer gets an error, not success. | `github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage@v0.162.0/client.go:345-350`; `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:308-313` | supported by inspected source |
 | After a failed write the queue does not roll back its in-memory size counters, so free capacity is understated until the queue fully drains. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:286-313` | supported by inspected source |
-| Admission fails closed at `max_size` without losing earlier acknowledged records. | no test; see PC-13 | not yet proven |
+| Admission fails closed at `max_size` (HTTP 503 "the storage extension has run out of available space") and every record acknowledged before it is delivered after the gateway returns. | `TestEdgeStorageLimitKeepsAcknowledgedRecords` | proven by test |
+| `file_storage` refuses a `max_size` below its default 100 MiB compaction rebound threshold, which the profiles do not expose, so the smallest cap a profile accepts is just above 100 MiB. | `github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage@v0.162.0/config.go:104`; observed as a start-up refusal while writing the storage-limit test | supported by inspected source |
 
 ### Interpretation
 

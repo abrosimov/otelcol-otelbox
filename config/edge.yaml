@@ -252,9 +252,10 @@ exporters:
       # Backpressure rather than silent loss: this role's producers are OTLP
       # clients that hold their own data and retry.
       block_on_overflow: true
-      # A record above max_size is dropped together with the rest of its
-      # request, so keep the invariant: max_size < the gateway's
-      # max_recv_msg_size_mib ≤ its max_request_body_size.
+      # A record above max_size is dropped on its own after it was
+      # acknowledged; the rest of its request is still exported. Keep the
+      # invariant: max_size < the gateway's max_recv_msg_size_mib ≤ its
+      # max_request_body_size.
       batch:
         flush_timeout: 200ms
         sizer: bytes

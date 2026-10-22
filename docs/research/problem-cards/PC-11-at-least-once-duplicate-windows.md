@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim: duplicates arise after a recipient accepts a request but before the item is deleted, on fan-out partial failure, and when a blocked request is persisted after its producer retried; no window loses an item through these paths. |
 | Why not a ticket | Exactly-once is out of scope; the useful result is the list of windows and the idempotency obligation they place on recipients. |
 | Acceptance probe | A test where the recipient accepts and the edge is killed before deletion, showing a re-send and no loss. |
-| Next use | P2W-ready: a lost-downstream-ACK test; document recipient idempotency. |
+| Next use | Characterised; recipient idempotency is a producer and recipient obligation in the audit. |
 
 ### Evidence
 
@@ -40,7 +40,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | The item is deleted only after export returns. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:394-426` | supported by inspected source |
 | Dispatched items are re-enqueued at restart. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:151-160`, `:448-499` | supported by inspected source |
 | No delivery ordering is guaranteed after restart. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:448-499` | supported by inspected source |
-| A record accepted by the recipient before a crash is re-sent and not lost. | no test | not yet proven |
+| A record the recipient received before the gateway died, without seeing the answer, is sent again by the restarted gateway. | `TestGatewayResendsWhenRecipientAcknowledgementIsLost` | proven by test |
 
 ### Interpretation
 

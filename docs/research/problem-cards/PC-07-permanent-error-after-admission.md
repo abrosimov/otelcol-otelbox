@@ -28,10 +28,10 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Signal | The exporter logs "Exporting failed. Dropping data." and deletes the item when an error is classified as permanent. HTTP 500 and gRPC `Internal` or `Unknown` are classified as permanent. |
 | Entity of concern | The classification, in the outer exporterhelper of each wrapper, of a recipient's response as permanent, and the deletion of the admitted item that follows. |
 | Scope | All network exporters of edge and gateway; gRPC and HTTP recipients; v0.162.0 exporters and the local wrappers. |
-| Claim family | Anticipated-condition claim: durable admission does not imply delivery. A recipient response classified as permanent ends delivery for that item, which violates the liveness condition "no permanent delivery error" even when the recipient's failure was transient. |
+| Claim family | Actual counterexample to eventual delivery: durable admission does not imply delivery. A recipient response classified as permanent ends delivery for that item, which violates the liveness condition "no permanent delivery error" even when the recipient's failure was transient. |
 | Why not a ticket | "Retry more" does not say which responses are transient for a given recipient. |
 | Acceptance probe | A recipient double that answers 500 once and then succeeds: the record is either delivered or the loss is visible in `otelcol_exporter_send_failed_*` and the log. |
-| Next use | Owner decision on reclassification; a test that demonstrates the current behaviour. |
+| Next use | Owner decision on reclassification; the test pins today's behaviour and must change with it. |
 
 ### Evidence
 
@@ -41,7 +41,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | gRPC: only `Canceled`, `DeadlineExceeded`, `Aborted`, `OutOfRange`, `Unavailable`, `DataLoss`, and `ResourceExhausted` with `RetryInfo`, are retryable. | `go.opentelemetry.io/collector/exporter/otlpexporter@v0.162.0/otlp.go:173-221` | supported by inspected source |
 | HTTP: only 429, 502, 503 and 504 are retryable; 500 is permanent. | `go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.162.0/otlp.go:176-277` | supported by inspected source |
 | The wrappers reclassify only `Unauthenticated` and `PermissionDenied` (401 and 403). | `internal/exporters/*/factory.go` `classifyError` | supported by inspected source |
-| A transient 500 from a recipient loses an admitted record. | no test | not yet proven |
+| One HTTP 500 from the selected-traces recipient drops an admitted span: no retry within 15 s, `otelcol_exporter_send_failed_spans` rises and "Dropping data" is logged. | `TestRecipientHTTP500DropsAnAdmittedRecord` | proven by test |
 
 ### Interpretation
 

@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim: the response is success only when both branches returned nil; a branch that drops every resource by filter returns nil; a failure in one branch after the other persisted yields an error and, on producer retry, a duplicate in the persisted branch, never a loss. |
 | Why not a ticket | "Test fan-out" does not say which outcome is acceptable when the branches disagree. |
 | Acceptance probe | A mixed request whose selected branch cannot enqueue receives no success, the all-signal branch may hold a copy, and after recovery every `llm` record reaches both recipients and every unclassified record reaches only the all-signal recipient. |
-| Next use | P2W-ready: a harness test that posts a mixed request while the selected-traces queue is full, then recovers. |
+| Next use | Closed for the receiving use; the duplicate it allows is PC-11's. |
 
 ### Evidence
 
@@ -41,7 +41,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Pipeline order is fixed at graph build but unspecified, so which branch persists first is not defined. | service v0.162.0 graph construction (gonum map iteration) | supported by inspected source |
 | A filter that removes every resource returns the skip sentinel, which `processorhelper` turns into nil. | `github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor@v0.162.0/internal/condition/traces.go:109-111`; `go.opentelemetry.io/collector/processor/processorhelper@v0.162.0/traces.go:62-66` | supported by inspected source |
 | A full selected-traces queue blocks the whole request; the separate log, metric and trace queues stay independent. | `TestRequiredRecipientCouplingUnderQueuePressure` | proven by test |
-| A mixed request with a failing selected branch is never acknowledged and loses nothing after recovery. | no test | not yet proven |
+| A mixed request is not acknowledged while the selected-traces queue cannot take it; after recovery the classified span reaches both recipients and the unclassified span only the all-signal recipient. | `TestGatewayMixedTraceRequestIsOneAcknowledgementUnit` | proven by test |
 
 ### Interpretation
 

@@ -31,19 +31,21 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim: trace ID, span ID, parent span ID, links, and attributes that match no redaction pattern arrive byte-identical; the collector adds only generic resource attributes and redaction summary counts. |
 | Why not a ticket | "Support the new engine" does not name the fields that must survive. |
 | Acceptance probe | An end-to-end test that compares identifiers, links and a set of producer attributes, including token-count integers, at the recipient. |
-| Next use | P2W-ready: harness test; document which attribute keys the redaction floor would mask. |
+| Next use | Characterised; the key-set obligation goes into the producer contract in the audit. |
 
 ### Evidence
 
 | Claim | Proof | Status |
 | --- | --- | --- |
-| Redaction masks string values of keys whose segment is `token`, `auth`, `secret` and others; `redact_all_types: false` leaves integers intact. | `config/*.yaml` `redaction/secrets` (SHARED) | supported by inspected source |
+| A blocked key masks its value whatever its type: an integer under `llm.token_count.prompt` arrives as the string `****`; `redact_all_types: false` only stops value patterns from scanning non-strings. | `TestProducerIdentitySurvivesTheCollector` | proven by test |
+| `gen_ai.usage.input_tokens` (GenAI semantic conventions) arrives intact, because its segment is `tokens`, not `token`. | `TestProducerIdentitySurvivesTheCollector` | proven by test |
+| Redaction adds `redaction.masked.count` to a record it changed; edge and gateway each add to it. | `TestProducerIdentitySurvivesTheCollector` sink output | proven by test |
 | `resource_detection` does not override existing resource attributes. | `config/edge.yaml` `override: false` | supported by inspected source |
-| Identifiers, parent links and span links arrive unchanged at both recipients. | no test | not yet proven |
+| Trace, span, parent and link IDs and producer attributes outside the key set arrive unchanged at both recipients. | `TestProducerIdentitySurvivesTheCollector` | proven by test |
 
 ### Interpretation
 
-A string attribute such as `llm.token_count.prompt` would be masked if a producer sent it as a string. Producers must keep identifiers out of the redaction key set.
+Identity and correlation survive. Token usage in the OpenInference convention does not: the credential floor turns it into `****`, which a recipient such as Langfuse cannot read. A producer must use the GenAI convention or another key outside the blocked segments; widening the floor's exceptions is a redaction-contract change, not a transport one.
 
 ## Sources And Limits
 

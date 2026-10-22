@@ -31,15 +31,15 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim: rejected records in a partial-success response are logged at Warn and the request counts as sent, so they are dropped without retry. |
 | Why not a ticket | Partial success is a protocol outcome, not a failure the queue can retry. |
 | Acceptance probe | A recipient double answering `partial_success` with rejected items: the drop is visible only in the log and is not counted as `send_failed`. |
-| Next use | P2W-ready: test with the HTTP backend double; document the obligation on recipients and producers. |
+| Next use | Characterised; the test pins today's behaviour. Recipients' use of partial success is an open protocol question for the producer contract. |
 
 ### Evidence
 
 | Claim | Proof | Status |
 | --- | --- | --- |
-| Both OTLP exporters log a partial-success response and return nil. | `go.opentelemetry.io/collector/exporter/otlpexporter@v0.162.0/otlp.go:103-110`, `:123-130`, `:143-150`; `go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.162.0/otlp.go:111`, `:131`, `:152` (partial-success handlers) | supported by inspected source |
+| Both OTLP exporters log a partial-success response and return nil. | `go.opentelemetry.io/collector/exporter/otlpexporter@v0.162.0/otlp.go:103-110`, `:123-130`, `:143-150`; `go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.162.0/otlp.go:347-375` and the metrics and logs handlers after it | supported by inspected source |
 | The receiver never sets `partial_success` towards the producer. | `go.opentelemetry.io/collector/receiver/otlpreceiver@v0.162.0` (no non-test reference) | supported by inspected source |
-| Records rejected by a recipient are not retried and not counted as failed. | no test | not yet proven |
+| A partial success from the selected-traces recipient is logged as "Partial success response", not retried within 15 s, and not counted in `otelcol_exporter_send_failed_spans`. | `TestRecipientPartialSuccessCountsAsDelivered` | proven by test |
 
 ### Interpretation
 

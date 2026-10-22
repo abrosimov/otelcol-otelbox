@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim about the implementation: success is returned only after `ConsumeX` of every required exporter has returned nil, and that return follows a committed storage transaction. |
 | Why not a ticket | "Add more durability tests" names Work, not the property. This card fixes which ordering the tests must observe. |
 | Acceptance probe | For each role, protocol and signal: a record acknowledged while every downstream is down survives SIGKILL and is delivered after restart. Source references show no buffer between receiver and queue. |
-| Next use | P2W-ready: carry into the failure matrix rows for edge traces and metrics over HTTP, and into PC-12 for gRPC. |
+| Next use | Closed for the receiving use: the failure matrix rows cite the tests. |
 
 ### Evidence
 
@@ -44,11 +44,11 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | `sending_queue.batch` batches on the consumer side of the queue, so it does not hold unpersisted data. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queuebatch/queue_batch.go:74` | supported by inspected source |
 | Edge logs over HTTP survive SIGKILL immediately after 200. | `TestEdgePersistsAcceptedDataBeforeAcknowledgement` | proven by test |
 | Gateway logs, metrics, traces and selected traces over HTTP survive SIGKILL immediately after 200. | `TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement`, `TestGatewayPersistsSelectedTraceBeforeAcknowledgement` | proven by test |
-| Edge traces and metrics, and all OTLP/gRPC ingress, survive SIGKILL after success. | no test | not yet proven |
+| Edge spans and metric points over HTTP, and edge and gateway logs, spans and metric points over OTLP/gRPC, survive SIGKILL immediately after success. | `TestEdgePersistsAcceptedDataBeforeAcknowledgement`, `TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement` (both extended in this audit) | proven by test |
 
 ### Interpretation
 
-The source supports the ordering for every signal and both protocols because they share `Receiver.Export` and one queue implementation. The executable evidence is narrower than the claim.
+Source and tests now agree for both roles, all three signals and both protocols. The selected-traces recipient is proven for traces over HTTP, the only signal it receives.
 
 ## Sources And Limits
 
