@@ -163,8 +163,13 @@ exporters classify broadly as permanent:
 - gRPC `Internal`, `Unknown` and every other code outside the retryable set is
   permanent.
 
-**One transient HTTP 500 drops an admitted record** (proven by test,
-[PC-07](problem-cards/PC-07-permanent-error-after-admission.md)). A partial
+On the audited 2.4.2 build, **one transient HTTP 500 dropped an admitted
+record** ([PC-07](problem-cards/PC-07-permanent-error-after-admission.md)).
+This PR corrects that: `retry_on_server_error` in both wrappers returns HTTP
+5xx and gRPC `Internal`/`Unknown` to the ordinary backoff, every profile
+enables it, and `TestRecipientHTTP500IsRetriedUntilDelivered` proves the
+record is now delivered (proven by test). Other permanent answers, such as
+HTTP 400 or 413, still end delivery. A partial
 success is counted as delivered, and its rejected records are dropped
 (proven by test, [PC-08](problem-cards/PC-08-recipient-partial-success.md)).
 Neither is a violation of durable admission, but both bound what "admitted"
@@ -237,19 +242,21 @@ Open protocol questions, not answered by standard OTLP here:
 1. **Does the collector already provide the durable admission contract?**
    Yes for process crash, on both roles, every signal and both protocols, with
    the two narrow upstream hazards PC-13 and PC-14 not yet refuted. Eventual
-   delivery is not provided under recipient 500, `Internal`, `Unknown` or
-   partial success.
+   delivery was not provided under a recipient 500, `Internal` or `Unknown`
+   until the correction in this PR; it is still not provided under partial
+   success or other permanent answers.
 2. **Which assumptions remain unresolved?**
    - storage flush semantics under power loss;
    - power loss after a compaction rename;
    - PC-13's contended path;
    - PC-14's restart window;
-   - recipient answers that the exporter classifies as permanent;
+   - recipient answers that remain permanent (4xx other than 401, 403 and
+     429; partial success);
    - no free-disk or storage-size telemetry on macOS.
-3. **Are code changes needed?** None for admission. The decision on recipient
-   error classification is needed before eventual delivery can be claimed; the
-   existing wrapper seam can carry it. The other gaps are telemetry and
-   upstream fixes.
+3. **Are code changes needed?** None for admission. One for delivery, made in
+   this PR on the owner's decision: server errors retry with backoff through
+   the existing wrapper seam (`dist.version` 2.5.0, a minor capability). The
+   other gaps are telemetry and upstream fixes.
 4. **What can the Go engine rely on?** The Finding 08 contract.
 5. **Is a producer-side OTLP WAL redundant?**
    - **Process crash:** it is redundant for collector crashes once a request
@@ -268,14 +275,10 @@ Open protocol questions, not answered by standard OTLP here:
 
 ### Proposal: recommendations ranked by necessity
 
-1. **Decide the recipient error classification.** This is required for any
-   eventual-delivery claim. Two options:
-   - keep upstream behaviour and document it as a recipient obligation;
-   - reclassify HTTP 500 and gRPC `Internal`/`Unknown` as retryable in the
-     wrappers, with a bounded interval and alerting.
-
-   The trade-offs are in
-   [PC-07](problem-cards/PC-07-permanent-error-after-admission.md).
+1. **Recipient error classification: done in this PR.** The owner chose retry
+   with backoff; a deterministic server error now holds its queue, so the
+   queue-fill alert of recommendation 2 is what reports it
+   ([PC-07](problem-cards/PC-07-permanent-error-after-admission.md)).
 2. **Make early warning a safety requirement while PC-13 stands.** Alert on
    `queue_size / queue_capacity` well below 1, alert on missing telemetry from
    a node, and choose a macOS disk-space source. The options are in

@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Actual counterexample to eventual delivery: durable admission does not imply delivery. A recipient response classified as permanent ends delivery for that item, which violates the liveness condition "no permanent delivery error" even when the recipient's failure was transient. |
 | Why not a ticket | "Retry more" does not say which responses are transient for a given recipient. |
 | Acceptance probe | A recipient double that answers 500 once and then succeeds: the record is either delivered or the loss is visible in `otelcol_exporter_send_failed_*` and the log. |
-| Next use | Owner decision on reclassification; the test pins today's behaviour and must change with it. |
+| Next use | Closed by the owner's decision to retry with backoff (2.5.0); a deterministic server error is now reported by the queue-fill alert of PC-04. |
 
 ### Evidence
 
@@ -41,11 +41,13 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | gRPC: only `Canceled`, `DeadlineExceeded`, `Aborted`, `OutOfRange`, `Unavailable`, `DataLoss`, and `ResourceExhausted` with `RetryInfo`, are retryable. | `go.opentelemetry.io/collector/exporter/otlpexporter@v0.162.0/otlp.go:173-221` | supported by inspected source |
 | HTTP: only 429, 502, 503 and 504 are retryable; 500 is permanent. | `go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.162.0/otlp.go:176-277` | supported by inspected source |
 | The wrappers reclassify only `Unauthenticated` and `PermissionDenied` (401 and 403). | `internal/exporters/*/factory.go` `classifyError` | supported by inspected source |
-| One HTTP 500 from the selected-traces recipient drops an admitted span: no retry within 15 s, `otelcol_exporter_send_failed_spans` rises and "Dropping data" is logged. | `TestRecipientHTTP500DropsAnAdmittedRecord` | proven by test |
+| On 2.4.2, one HTTP 500 from the selected-traces recipient dropped an admitted span: no retry within 15 s, `otelcol_exporter_send_failed_spans` rose and "Dropping data" was logged. | harness run against the 2.4.2 build during this audit (test since replaced) | proven by test |
+| With `retry_on_server_error`, the wrappers return gRPC `Internal`/`Unknown` and HTTP 5xx to the ordinary backoff and keep HTTP 400, 409 and 413 permanent; the HTTP wrapper reads the status from the pinned upstream message. | `internal/exporters/*/factory.go` `classifyError`; `TestClassifyServerError`, `TestClassifyErrorReadsTheUpstreamMessage` | proven by test |
+| An admitted span that met one HTTP 500 is sent again and delivered, with nothing counted as failed or dropped. | `TestRecipientHTTP500IsRetriedUntilDelivered` | proven by test |
 
 ### Interpretation
 
-This is the main gap between durable admission and eventual delivery. Admission holds; delivery depends on recipients never answering a transient failure with 500, `Internal` or `Unknown`.
+This was the main gap between durable admission and eventual delivery. The correction trades a silent drop for a held queue: a recipient that fails every attempt now stops its queue instead of losing data, which makes queue-fill alerting part of the delivery contract.
 
 ### Proposal
 
@@ -63,4 +65,4 @@ Upstream paths are module paths in the Go module cache at the versions
 proven by test, supported by inspected source, assumed from external
 contract, not yet proven.
 
-Recipient behaviour is outside this repository; the choice is the owner's.
+The owner chose the second option on 2026-10-22. Recipient behaviour remains outside this repository.
