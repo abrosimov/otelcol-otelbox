@@ -92,6 +92,10 @@
 // decorative: without it the first would pass whether or not the exporter
 // offered anything.
 //
+// TestEdgeConcurrentAdmissionKeepsEveryRecord admits 200 log records from
+// eight concurrent producers while the gateway is down, kills the edge and
+// requires every acknowledged record after restart.
+//
 // TestEdgeStorageLimitKeepsAcknowledgedRecords fills the edge WAL to its
 // file_storage max_size while the gateway is down. The first record that does
 // not fit must be refused, not acknowledged, and every record acknowledged
