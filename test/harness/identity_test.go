@@ -13,12 +13,11 @@ import (
 // TestProducerIdentitySurvivesTheCollector holds PC-10: the identifiers and
 // correlation a producer sets travel edge -> gateway -> both recipients
 // unchanged. Trace, span and parent span IDs, a span link, and producer
-// attributes outside the redaction key set arrive as sent. The test also pins
-// the exception a producer must design around: a blocked key masks its value
-// whatever its type, so an integer under a key with a `token` segment, such as
-// OpenInference's llm.token_count.prompt, arrives as the string "****", while
-// the GenAI convention's gen_ai.usage.input_tokens, whose segment is `tokens`,
-// arrives intact.
+// attributes outside the redaction key set arrive as sent. Token usage keys
+// of the OpenInference and GenAI conventions arrive intact, including those
+// with a `token` segment that redaction exempts through `ignored_keys`. A
+// blocked key that no convention exempts still masks its value whatever its
+// type: an integer under producer.auth.token arrives as the string "****".
 func TestProducerIdentitySurvivesTheCollector(t *testing.T) {
 	pair := startEdgeAndGateway(t, "identity")
 	edge, sink, selectedBackend := pair.edge, pair.sink, pair.selectedBackend
@@ -44,8 +43,10 @@ func TestProducerIdentitySurvivesTheCollector(t *testing.T) {
 		{"producer event ID", `"stringValue":"` + sent.eventID + `"`},
 		{"producer session ID", `"stringValue":"` + sent.sessionID + `"`},
 		{"GenAI semantic-convention token count", `{"key":"gen_ai.usage.input_tokens","value":{"intValue":"42"}}`},
-		{"masked integer under a token key", `{"key":"llm.token_count.prompt","value":{"stringValue":"****"}}`},
-		{"masked string under a token key", `{"key":"llm.token_count.completion","value":{"stringValue":"****"}}`},
+		{"OpenInference integer token count", `{"key":"llm.token_count.prompt","value":{"intValue":"42"}}`},
+		{"OpenInference token count sent as a string", `{"key":"llm.token_count.completion","value":{"stringValue":"17"}}`},
+		{"deprecated GenAI token type", `{"key":"gen_ai.token.type","value":{"stringValue":"input"}}`},
+		{"masked integer under a blocked key", `{"key":"producer.auth.token","value":{"stringValue":"****"}}`},
 	} {
 		if !strings.Contains(raw, want.text) {
 			t.Errorf("the all-signal recipient did not receive the %s as %s", want.what, want.text)
@@ -127,6 +128,8 @@ func (s producerSpan) payload(t *testing.T) []byte {
 						map[string]any{"key": "gen_ai.usage.input_tokens", "value": map[string]any{"intValue": "42"}},
 						map[string]any{"key": "llm.token_count.prompt", "value": map[string]any{"intValue": "42"}},
 						str("llm.token_count.completion", "17"),
+						str("gen_ai.token.type", "input"),
+						map[string]any{"key": "producer.auth.token", "value": map[string]any{"intValue": "7"}},
 					},
 					"links": []any{map[string]any{"traceId": s.linkTraceID, "spanId": s.linkSpanID}},
 				}},

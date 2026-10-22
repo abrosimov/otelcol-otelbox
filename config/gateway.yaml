@@ -166,6 +166,26 @@ processors:
     blocked_key_patterns:
       - '(?i)(^|.*[._-])(auth|authorization|cookie|token|secret|credential|password|passwd|pwd|passphrase|signature|dsn)($|[._-].*)'
       - '(?i)(^|.*[._-])(api[._-]?key|private[._-]?key|connection[._-]?string)($|[._-].*)'
+    # Exact semantic-convention keys whose `token` segment names a model token,
+    # not a credential: OpenInference usage counts and the GenAI token
+    # modality, plus its deprecated predecessor `gen_ai.token.type`, which
+    # older instrumentations still emit. An ignored key skips value scanning
+    # too, so the list stays exact and limited to numbers and enumerations.
+    # `otelbox-ci redaction check` holds it to the pinned conventions.
+    ignored_keys:
+      - decision.token_count.input
+      - decision.token_count.output
+      - gen_ai.token.modality
+      - gen_ai.token.type
+      - llm.token_count.completion
+      - llm.token_count.completion_details.audio
+      - llm.token_count.completion_details.reasoning
+      - llm.token_count.prompt
+      - llm.token_count.prompt_details.audio
+      - llm.token_count.prompt_details.cache_input
+      - llm.token_count.prompt_details.cache_read
+      - llm.token_count.prompt_details.cache_write
+      - llm.token_count.total
     blocked_values:
       - '(?i)\b(Bearer|Basic)\s+\S+'
       - '(?i)^(sk|rk|pk)[-_][A-Za-z0-9_-]{16,}$'

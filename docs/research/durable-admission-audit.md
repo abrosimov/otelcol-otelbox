@@ -227,9 +227,12 @@ A producer must do this:
 - set a deadline;
 - keep each request below the edge `queue_size` and its receiver limit;
 - put a stable event identity in an attribute;
-- keep identifiers and usage values out of blocked key segments
-  (`token`, `auth`, `secret` and the others). For example, OpenInference
-  `llm.token_count.*` arrives as `****`; use `gen_ai.usage.*` instead.
+- keep its own identifiers and custom attributes out of blocked key segments
+  (`token`, `auth`, `secret` and the others), whose values are masked whatever
+  their type. On 2.4.2 this also masked OpenInference `llm.token_count.*`;
+  this PR exempts the convention token-usage keys through `ignored_keys` and
+  checks that list against the current OpenInference and GenAI conventions in
+  CI, so both conventions' usage attributes now arrive intact (proven by test).
 
 Open protocol questions, not answered by standard OTLP here:
 

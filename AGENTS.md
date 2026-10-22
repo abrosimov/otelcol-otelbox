@@ -46,6 +46,7 @@ module that drives the built binary from outside.
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
 | `Formula/otelcol-otelbox.rb` | Homebrew installation channel; release literals are CI-owned. |
 | `.github/workflows/otelcol-otelbox.yml` | Build, prove and publish graph. |
+| `.github/workflows/redaction-conventions.yml` | Weekly and on-change check of the redaction key list against the current semantic conventions; separate so a scheduled run can never publish. |
 
 ## Role contract
 
@@ -204,7 +205,12 @@ attributes; span and event attributes; scalar log bodies by value; and
 structured log bodies recursively. It does not inspect span/event names, span
 links, metric identity fields, exemplars or nested map/slice attribute values.
 `redact_all_types` stays false because a nested match would coerce the complete
-structured attribute to a string.
+structured attribute to a string. A blocked key masks a value of any type;
+`ignored_keys` exempts the exact semantic-convention token-usage keys, and
+`otelbox-ci redaction check`, run by the `redaction-conventions` workflow,
+holds that list to the current OpenInference and GenAI conventions. A new
+exemption or a deliberate exception (`tools/ci/redaction-exceptions.tsv`)
+needs the same harness evidence as a pattern change.
 
 The canonical carrier and threat boundary is `docs/reference/redaction.md`. Producers
 must source-sanitise unstructured text and must not place secrets in uncovered
@@ -291,8 +297,9 @@ load and conceal adoption drift.
 Upstream module versions never appear in the artefact version. The workflow
 derives OCB's version from the `otlpreceiver` pin and rejects any other `gomod`
 pin, `UPSTREAM_VERSION` file or wrapper Collector requirement that disagrees.
-Go is pinned exactly — never to a range — in the workflow's `setup-go` steps,
-which are the one place to read or change it. The exact pin exists because a Go
+Go is pinned exactly — never to a range — in the workflows' `setup-go` steps,
+which are the one place to read or change it, and every step carries the same
+version. The exact pin exists because a Go
 patch release once mislinked this generated collector while the next patch built
 the same manifest successfully. The pin moves like any other dependency, on a
 green build.

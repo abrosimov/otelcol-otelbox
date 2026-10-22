@@ -116,6 +116,19 @@
 // retried. That describes current behaviour, not the desired contract; the
 // audit in docs/research records the open question.
 //
+// TestGatewayMixedTraceRequestIsOneAcknowledgementUnit fills the
+// selected-traces queue while its recipient holds every answer, then sends one
+// request carrying a classified and an unclassified resource: it must not be
+// acknowledged. After recovery the retried request is admitted, the classified
+// span reaches both recipients and the unclassified one only the all-signal
+// recipient.
+//
+// TestProducerIdentitySurvivesTheCollector sends a classified span through
+// edge and gateway and requires its trace, span, parent and link IDs and its
+// producer attributes at both recipients, including OpenInference and GenAI
+// token-usage keys that redaction exempts. A blocked key outside those
+// exemptions still masks a value of any type.
+//
 // TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
 // exercises the `resource` processor, which the binary links and no role profile
 // wires. It stands up the arrangement docs/reference/gateway.md documents for
