@@ -105,25 +105,12 @@
 // the selected-traces recipient received a record but before it answered; the
 // restarted gateway must send the record again. A duplicate is the contract.
 //
-// TestRecipientHTTP500DropsAnAdmittedRecord and
-// TestRecipientPartialSuccessCountsAsDelivered pin what the pinned HTTP
-// exporter does with two recipient answers: one HTTP 500 drops an admitted
-// record as permanent, and a partial success is logged, counted as sent and
-// not retried. Both describe current behaviour, not the desired contract; the
-// audit in docs/research records the decision they wait on.
-//
-// TestGatewayMixedTraceRequestIsOneAcknowledgementUnit fills the
-// selected-traces queue while its recipient holds every answer, then sends one
-// request carrying a classified and an unclassified resource: it must not be
-// acknowledged. After recovery the retried request is admitted, the classified
-// span reaches both recipients and the unclassified one only the all-signal
-// recipient.
-//
-// TestProducerIdentitySurvivesTheCollector sends a classified span through
-// edge and gateway and requires its trace, span, parent and link IDs and its
-// producer attributes at both recipients. It also pins that a blocked key
-// masks a value of any type, so an integer under llm.token_count.prompt
-// arrives as "****" while gen_ai.usage.input_tokens arrives intact.
+// TestRecipientHTTP500IsRetriedUntilDelivered requires an admitted record that
+// met one HTTP 500 to be sent again and delivered, not dropped as permanent.
+// TestRecipientPartialSuccessCountsAsDelivered pins what the pinned HTTP
+// exporter does with a partial success: it is logged, counted as sent and not
+// retried. That describes current behaviour, not the desired contract; the
+// audit in docs/research records the open question.
 //
 // TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
 // exercises the `resource` processor, which the binary links and no role profile

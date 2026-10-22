@@ -2,6 +2,7 @@ package otlphttpauthretry
 
 import (
 	"context"
+	"regexp"
 
 	"go.opentelemetry.io/otel/metric/noop"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -47,7 +48,7 @@ func createTraces(ctx context.Context, settings exporter.Settings, config compon
 		settings,
 		config,
 		func(ctx context.Context, traces ptrace.Traces) error {
-			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -69,7 +70,7 @@ func createMetrics(ctx context.Context, settings exporter.Settings, config compo
 		settings,
 		config,
 		func(ctx context.Context, metrics pmetric.Metrics) error {
-			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -91,7 +92,7 @@ func createLogs(ctx context.Context, settings exporter.Settings, config componen
 		settings,
 		config,
 		func(ctx context.Context, logs plog.Logs) error {
-			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -116,16 +117,32 @@ func innerSettings(settings exporter.Settings) exporter.Settings {
 	return settings
 }
 
-func classifyError(err error, config AuthRetryConfig) error {
-	if err == nil || !config.Enabled {
+// The upstream exporter maps every HTTP status it does not name to gRPC
+// `Unknown` and keeps the status code only in this message, which
+// TestClassifyErrorReadsTheUpstreamMessage holds to the pinned release.
+var serverErrorStatus = regexp.MustCompile(`responded with HTTP Status Code (5[0-9][0-9])\b`)
+
+// classifyError reclassifies the upstream exporter's permanent errors that
+// this wrapper retries: authentication failures (401, 403) after a long
+// throttle, and HTTP 5xx server errors through the ordinary retry backoff.
+// Every other error is returned unchanged.
+func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerErrorRetryConfig) error {
+	if err == nil {
 		return err
 	}
 	grpcStatus, ok := status.FromError(err)
 	if !ok {
 		return err
 	}
-	if grpcStatus.Code() != codes.Unauthenticated && grpcStatus.Code() != codes.PermissionDenied {
-		return err
+	switch grpcStatus.Code() {
+	case codes.Unauthenticated, codes.PermissionDenied:
+		if authRetry.Enabled {
+			return exporterhelper.NewThrottleRetry(grpcStatus.Err(), authRetry.Interval)
+		}
+	case codes.Unknown:
+		if serverRetry.Enabled && serverErrorStatus.MatchString(grpcStatus.Message()) {
+			return grpcStatus.Err()
+		}
 	}
-	return exporterhelper.NewThrottleRetry(grpcStatus.Err(), config.Interval)
+	return err
 }

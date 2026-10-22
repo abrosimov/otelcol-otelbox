@@ -142,12 +142,12 @@ func TestGatewayResendsWhenRecipientAcknowledgementIsLost(t *testing.T) {
 	}
 }
 
-// TestRecipientHTTP500DropsAnAdmittedRecord pins the PC-07 counterexample to
-// eventual delivery: the pinned otlphttp exporter classifies HTTP 500 as
-// permanent, so one transient 500 ends delivery of an admitted record. The
-// loss is visible in otelcol_exporter_send_failed and the "Dropping data"
-// log line. If the classification changes, this test must change with it.
-func TestRecipientHTTP500DropsAnAdmittedRecord(t *testing.T) {
+// TestRecipientHTTP500IsRetriedUntilDelivered holds the PC-07 correction: the
+// pinned otlphttp exporter calls HTTP 500 permanent, which dropped an admitted
+// record on one transient failure. retry_on_server_error turns it back into an
+// ordinary retry, so the record is sent again on the backoff and delivered,
+// and nothing is counted as failed or logged as dropped.
+func TestRecipientHTTP500IsRetriedUntilDelivered(t *testing.T) {
 	scenario := startRecipientScenario(t, "gateway-recipient-500", nil)
 	defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
 
@@ -161,21 +161,17 @@ func TestRecipientHTTP500DropsAnAdmittedRecord(t *testing.T) {
 	})
 	scenario.postSelected(t, marker)
 
-	if err := poll(deliveryTimeout, scenario.gateway, "the recipient to receive "+marker, func() bool {
-		return scenario.backend.count(marker) >= 1
-	}); err != nil {
-		t.Fatalf("the recipient never received the admitted trace: %v", err)
-	}
-	if err := staysFalse(recipientRetryWindow, scenario.gateway, "a retry of "+marker, func() bool {
+	// The first retry waits initial_interval (5s) plus jitter.
+	if err := poll(deliveryTimeout, scenario.gateway, "the gateway to send "+marker+" again after HTTP 500", func() bool {
 		return scenario.backend.count(marker) >= 2
 	}); err != nil {
-		t.Fatalf("HTTP 500 is no longer treated as permanent (%v); PC-07 and the failure matrix must be updated", err)
+		t.Fatalf("the recipient answered HTTP 500 once and the gateway never sent the admitted trace again: %v", err)
 	}
-	if !exporterMetricPositive(gatewayMetricsPort, "otelcol_exporter_send_failed_spans", "otlp_http/selected_traces") {
-		t.Fatalf("the dropped trace is not counted in otelcol_exporter_send_failed_spans, so the loss is invisible in metrics")
+	if exporterMetricPositive(gatewayMetricsPort, "otelcol_exporter_send_failed_spans", "otlp_http/selected_traces") {
+		t.Fatalf("the retried trace was counted as a failed send")
 	}
-	if line := scenario.gateway.firstLogLine("Dropping data"); line == "" {
-		t.Fatalf("the gateway dropped the trace without logging \"Dropping data\"")
+	if line := scenario.gateway.firstLogLine("Dropping data"); line != "" {
+		t.Fatalf("the gateway dropped data after a transient HTTP 500: %s", line)
 	}
 }
 

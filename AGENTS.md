@@ -28,8 +28,8 @@ wider telemetry estate, except for the historical Homebrew tap label:
 `internal/exporters/` contains thin wrappers around the pinned standard OTLP
 gRPC and HTTP exporters. The wrappers own the persistent queue and retry sender,
 disable those layers in the inner exporter and reclassify only authentication
-failures. `test/harness/` remains a separate, stdlib-only Go module that drives
-the built binary from outside.
+failures and server errors. `test/harness/` remains a separate, stdlib-only Go
+module that drives the built binary from outside.
 
 ## Map
 
@@ -180,8 +180,17 @@ request and retry after `${env:OTELBOX_AUTH_RETRY_INTERVAL}`, whose default the
 profiles carry. It is a separate, far longer interval than the exporter's
 transient backoff, which the profiles also state. The watched credential file
 is read again before a later attempt, so replacing it can drain the queue
-without restarting the Collector. Other permanent errors remain permanent so
-an invalid payload cannot pin a queue forever.
+without restarting the Collector.
+
+Every outbound exporter also enables `retry_on_server_error`. The pinned
+exporters call HTTP 5xx and gRPC `Internal`/`Unknown` permanent, so one
+transient recipient failure dropped admitted data. The wrapper returns those
+to the ordinary backoff; the HTTP wrapper reads the status code from the
+upstream error message, which `TestClassifyErrorReadsTheUpstreamMessage` holds
+to the pinned release. A recipient that fails deterministically holds its queue
+until the deployment's queue alert fires. Other permanent errors, such as HTTP
+400 or 413, remain permanent so an invalid payload cannot pin a queue forever.
+`TestRecipientHTTP500IsRetriedUntilDelivered` is the regression guard.
 
 Delivery is at least once. If a recipient accepts a request but its success
 response is lost, retry can duplicate it; exactly-once delivery requires a

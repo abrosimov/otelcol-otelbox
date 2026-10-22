@@ -47,7 +47,7 @@ func createTraces(ctx context.Context, settings exporter.Settings, config compon
 		settings,
 		config,
 		func(ctx context.Context, traces ptrace.Traces) error {
-			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -69,7 +69,7 @@ func createMetrics(ctx context.Context, settings exporter.Settings, config compo
 		settings,
 		config,
 		func(ctx context.Context, metrics pmetric.Metrics) error {
-			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -91,7 +91,7 @@ func createLogs(ctx context.Context, settings exporter.Settings, config componen
 		settings,
 		config,
 		func(ctx context.Context, logs plog.Logs) error {
-			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry)
+			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -117,16 +117,27 @@ func innerSettings(settings exporter.Settings) exporter.Settings {
 	return settings
 }
 
-func classifyError(err error, config AuthRetryConfig) error {
-	if err == nil || !config.Enabled {
+// classifyError reclassifies the upstream exporter's permanent errors that
+// this wrapper retries: authentication failures after a long throttle, and
+// server errors (`Internal`, `Unknown`) through the ordinary retry backoff.
+// Every other error is returned unchanged.
+func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerErrorRetryConfig) error {
+	if err == nil {
 		return err
 	}
 	grpcStatus, ok := status.FromError(err)
 	if !ok {
 		return err
 	}
-	if grpcStatus.Code() != codes.Unauthenticated && grpcStatus.Code() != codes.PermissionDenied {
-		return err
+	switch grpcStatus.Code() {
+	case codes.Unauthenticated, codes.PermissionDenied:
+		if authRetry.Enabled {
+			return exporterhelper.NewThrottleRetry(grpcStatus.Err(), authRetry.Interval)
+		}
+	case codes.Internal, codes.Unknown:
+		if serverRetry.Enabled {
+			return grpcStatus.Err()
+		}
 	}
-	return exporterhelper.NewThrottleRetry(grpcStatus.Err(), config.Interval)
+	return err
 }

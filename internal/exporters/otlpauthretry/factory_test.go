@@ -52,6 +52,20 @@ func TestConfigValidation(t *testing.T) {
 				config.AuthRetry = AuthRetryConfig{Enabled: true, Interval: time.Hour}
 			},
 		},
+		{
+			name: "server error retry without retry",
+			configure: func(config *Config) {
+				config.RetryConfig.Enabled = false
+				config.ServerErrorRetry.Enabled = true
+			},
+			wantError: `"retry_on_server_error" requires`,
+		},
+		{
+			name: "server error retry enabled",
+			configure: func(config *Config) {
+				config.ServerErrorRetry.Enabled = true
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -86,7 +100,7 @@ func TestClassifyError(t *testing.T) {
 	for _, code := range []codes.Code{codes.Unauthenticated, codes.PermissionDenied} {
 		t.Run(code.String(), func(t *testing.T) {
 			permanent := consumererror.NewPermanent(status.Error(code, "credential rejected"))
-			err := classifyError(permanent, authRetry)
+			err := classifyError(permanent, authRetry, ServerErrorRetryConfig{})
 
 			require.Error(t, err)
 			require.False(t, consumererror.IsPermanent(err))
@@ -95,9 +109,27 @@ func TestClassifyError(t *testing.T) {
 	}
 
 	permanent := consumererror.NewPermanent(status.Error(codes.InvalidArgument, "bad payload"))
-	require.Equal(t, permanent, classifyError(permanent, authRetry))
-	require.Equal(t, permanent, classifyError(permanent, AuthRetryConfig{}))
+	require.Equal(t, permanent, classifyError(permanent, authRetry, ServerErrorRetryConfig{}))
+	require.Equal(t, permanent, classifyError(permanent, AuthRetryConfig{}, ServerErrorRetryConfig{Enabled: true}))
 	plain := errors.New("plain")
-	require.Same(t, plain, classifyError(plain, authRetry))
-	require.NoError(t, classifyError(nil, authRetry))
+	require.Same(t, plain, classifyError(plain, authRetry, ServerErrorRetryConfig{Enabled: true}))
+	require.NoError(t, classifyError(nil, authRetry, ServerErrorRetryConfig{Enabled: true}))
+}
+
+func TestClassifyServerError(t *testing.T) {
+	serverRetry := ServerErrorRetryConfig{Enabled: true}
+	for _, code := range []codes.Code{codes.Internal, codes.Unknown} {
+		t.Run(code.String(), func(t *testing.T) {
+			permanent := consumererror.NewPermanent(status.Error(code, "recipient failed"))
+
+			retried := classifyError(permanent, AuthRetryConfig{}, serverRetry)
+			require.Error(t, retried)
+			require.False(t, consumererror.IsPermanent(retried))
+			require.NotContains(t, retried.Error(), "Throttle")
+
+			require.Equal(t, permanent, classifyError(permanent, AuthRetryConfig{}, ServerErrorRetryConfig{}))
+		})
+	}
+	invalid := consumererror.NewPermanent(status.Error(codes.InvalidArgument, "bad payload"))
+	require.Equal(t, invalid, classifyError(invalid, AuthRetryConfig{}, serverRetry))
 }

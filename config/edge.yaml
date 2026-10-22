@@ -274,6 +274,12 @@ exporters:
       # Credential outages need a probe, not a hot retry loop. The watched
       # header file is read again before the next attempt.
       interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
+    # The pinned exporters call HTTP 5xx and gRPC Internal/Unknown permanent and
+    # drop admitted data on one transient failure; retry them on the backoff
+    # above instead. A recipient that fails deterministically then holds its
+    # queue until the deployment's queue alert fires.
+    retry_on_server_error:
+      enabled: true
 
 service:
   extensions: [healthcheckv2, headers_setter/gateway, file_storage/gateway]
