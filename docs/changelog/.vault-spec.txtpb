@@ -1,0 +1,16 @@
+# Changelog imprints, changelog/<yyyy>/<mm>/ (standards/changelog-imprint.md): one
+# entry per change-set, immutable once landed. The body is immutable by the default.
+admits { admits { names { values: ["changelog-entry"] } } }
+kinds {
+  values {
+    name: "changelog-entry"
+  field_set { intent: CLAUSE_INTENT_NARROW field_set: FIELD_SET_POLICY_CLOSED }
+  fields {
+    values {
+      name: "status"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "immutable" } } } }
+    }
+  }
+  }
+}

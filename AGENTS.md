@@ -39,7 +39,7 @@ the built binary from outside.
 | `renovate.json5` | Extends the fleet preset. Dependency policy lives there, not here. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
-| `docs/` | Role and adoption notes. `redaction.md` is the canonical redaction carrier and threat boundary. |
+| `docs/` | The documentation vault, laid out under the kadmos template and selected by the root `.vault-root`. `docs/PROJECT_AGENTS.md` states its placement rules. `reference/` holds the role, redaction and adoption notes, edited in place with the profiles; `reference/redaction.md` is the canonical redaction carrier and threat boundary. `roadmaps/` holds the roadmap and deferred tasks. |
 | `tools/ci/` | Tested Go checks for manifest resolution, shared regions, built-binary contents and OCI runtime readiness. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |
@@ -197,7 +197,7 @@ links, metric identity fields, exemplars or nested map/slice attribute values.
 `redact_all_types` stays false because a nested match would coerce the complete
 structured attribute to a string.
 
-The canonical carrier and threat boundary is `docs/redaction.md`. Producers
+The canonical carrier and threat boundary is `docs/reference/redaction.md`. Producers
 must source-sanitise unstructured text and must not place secrets in uncovered
 carriers. `summary: info` supplies record-local masked counts, never key names;
 it is evidence that a rule fired, not proof that no secret escaped. The harness

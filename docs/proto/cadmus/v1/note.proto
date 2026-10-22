@@ -1,0 +1,50 @@
+edition = "2023";
+
+// Marked for removal: the vault.v1 schema replaces this package (D-030).
+package cadmus.v1;
+
+// NoteSkeleton is the language-independent shape of universal note
+// frontmatter. A note's effective field set is this skeleton plus the fields
+// declared for its subtype in the assembled VaultSchema.
+//
+// Frontmatter keys use protobuf identifier spelling, so a field keeps one name
+// across protobuf, textproto, and Markdown without a renaming layer.
+//
+// This .proto is the language-independent statement of the note's shape. The
+// schema data lives in .vault-schema.txtpb; an external implementation
+// interprets both declarations.
+message NoteSkeleton {
+  // Top-level kind selected by the adopting vault.
+  string type = 1;
+
+  // The real discriminator within a `type`. Its vocabulary comes from the
+  // assembled TypeDef declarations, so a descendant can add a TypeDef without
+  // redefining a closed field here.
+  string subtype = 2;
+
+  // 14-digit UTC timestamp, optionally with 3 more digits for milliseconds.
+  // The frontmatter key is `note_id`, identical to this field name.
+  string note_id = 3;
+
+  // When THIS note was written (ISO 8601 date).
+  string created = 4;
+
+  // Document language admitted by the effective schema.
+  string language = 5;
+
+  // Legacy source-vault compatibility marker. It is optional in the distributed
+  // root schema, omitted by descendant templates, and grants no authority.
+  bool gov_self_evolvement = 6 [deprecated = true];
+
+  // The typed handle(s), when the subtype declares an id prefix.
+  // Required only for subtypes declared `typed` in the schema.
+  repeated string aliases = 7;
+
+  // Drawn from the closed tag vocabulary in the effective root schema.
+  repeated string tags = 8;
+
+  // Storage projection, independent of a subtype-owned workflow status. Active
+  // notes live at their ordinary paths; archived and buried notes retain those
+  // paths under archive/ and graveyard/ respectively.
+  string retention = 9;
+}

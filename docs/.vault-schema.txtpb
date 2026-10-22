@@ -1,0 +1,314 @@
+# Installed as .vault-schema.txtpb at the generated vault root.
+version: 1
+
+config {
+  naming_convention {
+    zero_pad_width: 5
+    separator: "-"
+  }
+  validation_scope {
+    excluded_root_directory: ".agents"
+    excluded_root_directory: ".obsidian"
+    excluded_root_directory: "artifacts"
+    excluded_root_directory: "templates"
+    excluded_file_name: "AGENTS.md"
+    excluded_file_name: "CLAUDE.md"
+    excluded_file_name: "PROJECT_AGENTS.md"
+    excluded_file_name: "README.md"
+  }
+  retention_projection {
+    state: "active"
+  }
+  retention_projection {
+    state: "archived"
+    root_directory: "archive"
+  }
+  retention_projection {
+    state: "buried"
+    root_directory: "graveyard"
+  }
+}
+
+skeleton {
+  name: "type"
+  required: REQUIRED
+  kind: STRING
+}
+skeleton {
+  name: "subtype"
+  required: REQUIRED
+  kind: STRING
+}
+skeleton {
+  name: "note_id"
+  required: REQUIRED
+  kind: STRING
+  pattern: "^[0-9]{14}([0-9]{3})?$"
+}
+skeleton {
+  name: "created"
+  required: REQUIRED
+  kind: DATE
+}
+skeleton {
+  name: "language"
+  required: REQUIRED
+  kind: ENUM
+  enum: "en"
+}
+skeleton {
+  # Compatibility for inherited managed standards only. Descendant
+  # templates omit this field and it grants no authority.
+  name: "gov_self_evolvement"
+  required: OPTIONAL
+  kind: BOOL
+}
+skeleton {
+  name: "retention"
+  required: REQUIRED
+  kind: ENUM
+  enum: "active"
+  enum: "archived"
+  enum: "buried"
+}
+skeleton {
+  name: "aliases"
+  required: REQUIRED_IF_TYPED
+  kind: STRING_LIST
+}
+skeleton {
+  name: "tags"
+  required: OPTIONAL
+  kind: STRING_LIST
+}
+
+# DEPRECATED: kept unchanged so that a vault holding `rule` notes stays valid.
+# New standards carry `standard`, declared in standards/.vault-schema.txtpb.
+type {
+  subtype: "rule"
+  typed: false
+  field {
+    name: "status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "draft"
+    enum: "active"
+    enum: "superseded"
+  }
+  field {
+    name: "superseded_by"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "superseded"
+    required_field: "superseded_by"
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "active"
+    forbidden_field: "superseded_by"
+  }
+}
+
+type {
+  subtype: "agent-artifact"
+  typed: false
+  field {
+    name: "note_role"
+    required: REQUIRED
+    kind: ENUM
+    enum: "artifact"
+  }
+  field {
+    name: "artifact_kind"
+    required: REQUIRED
+    kind: ENUM
+    enum: "research"
+    enum: "proposal"
+    enum: "review"
+    enum: "retrospective"
+  }
+  field {
+    name: "publication_status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "draft"
+    enum: "published"
+  }
+  field {
+    name: "published_at"
+    required: OPTIONAL
+    kind: DATE
+  }
+  field {
+    name: "status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "active"
+    enum: "superseded"
+  }
+  field {
+    name: "superseded_by"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  field {
+    name: "authorship"
+    required: REQUIRED
+    kind: ENUM
+    enum: "agent"
+  }
+  field {
+    name: "assistant"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    name: "source_refs"
+    required: OPTIONAL
+    kind: WIKILINK_LIST
+  }
+  field {
+    name: "related"
+    required: OPTIONAL
+    kind: WIKILINK_LIST
+  }
+  field {
+    name: "evolved_from"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  conditional_field {
+    when_field: "publication_status"
+    when_value: "published"
+    required_field: "published_at"
+  }
+  conditional_field {
+    when_field: "publication_status"
+    when_value: "draft"
+    forbidden_field: "published_at"
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "superseded"
+    required_field: "superseded_by"
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "active"
+    forbidden_field: "superseded_by"
+  }
+}
+
+type {
+  subtype: "katoptron-behaviour-case"
+  typed: false
+  field {
+    name: "note_role"
+    required: REQUIRED
+    kind: ENUM
+    enum: "artifact"
+  }
+  field {
+    name: "artifact_kind"
+    required: REQUIRED
+    kind: ENUM
+    enum: "retrospective"
+  }
+  field {
+    name: "publication_status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "published"
+  }
+  field {
+    name: "published_at"
+    required: REQUIRED
+    kind: DATE
+  }
+  field {
+    name: "status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "active"
+    enum: "superseded"
+  }
+  field {
+    name: "superseded_by"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  field {
+    name: "authorship"
+    required: REQUIRED
+    kind: ENUM
+    enum: "agent"
+  }
+  field {
+    name: "assistant"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    name: "session_id"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    name: "model_provider"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "model"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "reasoning_effort"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "interface"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "cli_version"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "session_started_at"
+    required: OPTIONAL
+    kind: STRING
+  }
+  field {
+    name: "source_refs"
+    required: OPTIONAL
+    kind: WIKILINK_LIST
+  }
+  field {
+    name: "related"
+    required: OPTIONAL
+    kind: WIKILINK_LIST
+  }
+  field {
+    name: "evolved_from"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "superseded"
+    required_field: "superseded_by"
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "active"
+    forbidden_field: "superseded_by"
+  }
+}

@@ -1,0 +1,14 @@
+# changelog/.vault-schema.txtpb -- delta for the `changelog-entry` subtype.
+# One file per entry under changelog/yyyy/mm/, per the changelog standard
+# (standards/changelog-imprint.md): one entry per change-set, immutable once landed
+# on the default branch.
+type {
+  subtype: "changelog-entry"
+  typed: false
+  field {
+    name: "status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "immutable"
+  }
+}

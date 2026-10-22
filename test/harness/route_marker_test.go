@@ -8,13 +8,13 @@ import (
 )
 
 // The gateway routes on `otelbox.telemetry.class` and no role profile ever
-// writes it: the producer does, or nobody does. docs/gateway.md describes the
-// third case — a producer that cannot be changed but whose stream the local
-// collector can already tell apart — and 2.3.0 links the `resource` processor,
-// wired nowhere, so a deployment can render the stamp itself. This scenario is
-// that arrangement standing up: without it the processor is proved only by the
-// manifest check, which says that it is in the binary and nothing about whether
-// stamping there reaches the route it was linked for.
+// writes it: the producer does, or nobody does. docs/reference/gateway.md
+// describes the third case — a producer that cannot be changed but whose stream
+// the local collector can already tell apart — and 2.3.0 links the `resource`
+// processor, wired nowhere, so a deployment can render the stamp itself. This
+// scenario is that arrangement standing up: without it the processor is proved
+// only by the manifest check, which says that it is in the binary and nothing
+// about whether stamping there reaches the route it was linked for.
 func TestStampedRouteMarkerSelectsAnUnclassifiedTrace(t *testing.T) {
 	state := t.TempDir()
 	sink := filepath.Join(state, "sink.json")
@@ -122,7 +122,7 @@ func TestStampedRouteMarkerSelectsAnUnclassifiedTrace(t *testing.T) {
 	if err := poll(deliveryTimeout, gateway, "the stamped trace to reach the selected-traces recipient", func() bool {
 		return selectedBackend.contains(stampedMarker)
 	}); err != nil {
-		t.Fatalf("trace %s arrived carrying no otelbox.telemetry.class and never reached the selected-traces recipient: either resource/llm did not stamp it or the gateway's filter does not read what it stamped, and a deployment following docs/gateway.md would lose the route silently: %v; %s",
+		t.Fatalf("trace %s arrived carrying no otelbox.telemetry.class and never reached the selected-traces recipient: either resource/llm did not stamp it or the gateway's filter does not read what it stamped, and a deployment following docs/reference/gateway.md would lose the route silently: %v; %s",
 			stampedMarker, err, selectedBackend.diagnostics())
 	}
 	if err := staysFalse(2*time.Second, gateway, "the trace posted to the ordinary listener reached the selected-traces recipient", func() bool {

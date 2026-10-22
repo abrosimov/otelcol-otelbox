@@ -1,3 +1,13 @@
+---
+note_id: "20261022090800"
+created: 2026-10-22
+type: note
+subtype: roadmap-item
+language: en
+retention: active
+status: planned
+priority: low
+---
 # Task: define tenant-aware ingress rate limiting
 
 ## Status

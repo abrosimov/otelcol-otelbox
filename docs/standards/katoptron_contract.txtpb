@@ -1,0 +1,106 @@
+version: 2
+subtype: "katoptron-behaviour-case"
+path_pattern: "^katoptron/[0-9]{4}/(0[1-9]|1[0-2])/[a-z0-9]+(-[a-z0-9]+)*\\.md$"
+duplicate_body_normalisation: LINE_ENDINGS_AND_EDGE_WHITESPACE
+allow_additional_sections: false
+allow_additional_elements: false
+section_order: "What Happened"
+section_order: "Why"
+section_order: "Prevention Options"
+section_order: "Self-Reflection"
+section_order: "Lessons Learned"
+section_order: "Review Thread"
+
+element {
+  name: "What Happened"
+  heading_pattern: "^## What Happened$"
+  min_count: 1
+  max_count: 1
+  free_form_body: true
+  require_nonempty_body: true
+}
+
+element {
+  name: "Cause"
+  heading_pattern: "^### Cause ([0-9]{3})$"
+  min_count: 5
+  max_count: 10
+  contiguous_numeric_suffix: true
+  parent_heading: "Why"
+  field {
+    label: "Explanation"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    label: "Basis"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    label: "Limits"
+    required: REQUIRED
+    kind: STRING
+  }
+}
+
+element {
+  name: "Option"
+  heading_pattern: "^### Option ([0-9]{3})$"
+  min_count: 3
+  max_count: 5
+  contiguous_numeric_suffix: true
+  parent_heading: "Prevention Options"
+  field {
+    label: "Change"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    label: "Addresses"
+    required: REQUIRED
+    kind: WIKILINK_LIST
+    local_target_element: "Cause"
+  }
+  field {
+    label: "Check"
+    required: REQUIRED
+    kind: STRING
+  }
+  field {
+    label: "Limits"
+    required: REQUIRED
+    kind: STRING
+  }
+}
+
+element {
+  name: "Reason"
+  heading_pattern: "^### Reason ([0-9]{3})$"
+  min_count: 5
+  max_count: 10
+  contiguous_numeric_suffix: true
+  parent_heading: "Self-Reflection"
+  free_form_body: true
+  require_nonempty_body: true
+}
+
+element {
+  name: "Lessons Learned"
+  heading_pattern: "^## Lessons Learned$"
+  min_count: 1
+  max_count: 1
+  free_form_body: true
+  require_nonempty_body: true
+}
+
+element {
+  name: "Feedback"
+  heading_pattern: "^### Feedback ([0-9]{3})$"
+  contiguous_numeric_suffix: true
+  parent_heading: "Review Thread"
+  append_only_after_landing: true
+  free_form_body: true
+  require_nonempty_body: true
+  exclude_from_duplicate_check: true
+}

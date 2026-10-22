@@ -1,0 +1,91 @@
+edition = "2023";
+
+// Marked for removal: the vault.v1 schema replaces this package (D-030).
+package cadmus.v1;
+
+import "cadmus/v1/schema.proto";
+
+// KatoptronContract declares the machine-checkable body and history rules for
+// one Katoptron subtype. It is not a serialised case or an evidence carrier.
+// A reusable document grammar requires evidence from several subtypes and is
+// deliberately not inferred from this single contract.
+message KatoptronContract {
+  uint32 version = 1;
+  string subtype = 2;
+
+  // Matches the logical active path. Before matching a retained note, strip
+  // its non-empty retention-projection root directory from the physical path.
+  string path_pattern = 3;
+  repeated KatoptronElementRule element = 4;
+  repeated KatoptronConditionalRule conditional = 5;
+  KatoptronBodyNormalisation duplicate_body_normalisation = 6;
+  // Required level-two sections, each present once in this order.
+  repeated string section_order = 7;
+
+  // False makes section_order and element a closed vocabulary.
+  bool allow_additional_sections = 8;
+  bool allow_additional_elements = 9;
+}
+
+message KatoptronElementRule {
+  string name = 1;
+  string heading_pattern = 2;
+  uint32 min_count = 3;
+
+  // Zero means unbounded.
+  uint32 max_count = 4;
+
+  bool contiguous_numeric_suffix = 5;
+  bool append_only_after_landing = 6;
+  repeated KatoptronFieldRule field = 7;
+  string parent_heading = 8;
+
+  // False makes field a closed label vocabulary for the element.
+  bool allow_additional_fields = 9;
+
+  // The payload is Markdown prose instead of labelled fields. Field rules must
+  // be empty. Nested headings are payload, not additional contract elements;
+  // the next sibling or ancestor heading ends the element.
+  bool free_form_body = 10;
+
+  // Whitespace and HTML template comments alone do not constitute content.
+  bool require_nonempty_body = 11;
+
+  // Human feedback may legitimately repeat an earlier assessment verbatim.
+  bool exclude_from_duplicate_check = 12;
+}
+
+message KatoptronFieldRule {
+  string label = 1;
+  Requirement required = 2;
+  Kind kind = 3;
+  repeated string enum = 4;
+  repeated string local_target_element = 5;
+}
+
+message KatoptronConditionalRule {
+  oneof condition {
+    string when_element = 1;
+    KatoptronFrontmatterMatch when_frontmatter = 2;
+  }
+
+  oneof requirement {
+    string require_element = 3;
+    KatoptronFrontmatterMatch require_frontmatter = 4;
+  }
+}
+
+message KatoptronFrontmatterMatch {
+  string field = 1;
+
+  // Empty means that a non-empty value is required without constraining it.
+  string value = 2;
+}
+
+enum KatoptronBodyNormalisation {
+  KATOPTRON_BODY_NORMALISATION_UNSPECIFIED = 0;
+
+  // Convert CRLF and CR to LF, strip trailing spaces and tabs from each line,
+  // and remove leading and trailing blank lines. Preserve case and markup.
+  LINE_ENDINGS_AND_EDGE_WHITESPACE = 1;
+}

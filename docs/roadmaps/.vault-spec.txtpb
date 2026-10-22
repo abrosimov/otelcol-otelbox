@@ -1,0 +1,24 @@
+# Roadmap of otelcol-otelbox (vault.v1 DirectorySpec). The `roadmap-item` contract
+# follows the kadmos source vault's roadmaps/ delta at fcd0d58, without the fields
+# that kadmos keeps for its own history. tasks/ inherits this contract. Bodies are
+# immutable under the root default; a status change is a frontmatter change and a
+# changed plan is a successor note.
+admits { admits { names { values: ["roadmap-item"] } } }
+kinds {
+  values {
+    name: "roadmap-item"
+    field_set { intent: CLAUSE_INTENT_NARROW field_set: FIELD_SET_POLICY_CLOSED }
+    fields {
+      values {
+        name: "status"
+        admission { admission: FIELD_ADMISSION_ADMITTED }
+        primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "planned" } values { string_value: "in-progress" } values { string_value: "done" } values { string_value: "dropped" } values { string_value: "spike" } } } }
+      }
+      values {
+        name: "priority"
+        admission { admission: FIELD_ADMISSION_ADMITTED }
+        primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "low" } values { string_value: "medium" } values { string_value: "high" } values { string_value: "top-3" } } } }
+      }
+    }
+  }
+}

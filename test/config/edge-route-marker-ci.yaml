@@ -6,9 +6,10 @@
 #                   --config test/config/edge-route-marker-ci.yaml
 #
 # CI ONLY — never copy any part of this into a deployment. It plays the
-# deployment-rendered addition that docs/gateway.md describes under "Stamping the
-# route marker where the producer cannot", so the `resource` processor the binary
-# links and no role profile wires has something that exercises it end to end.
+# deployment-rendered addition that docs/reference/gateway.md describes under
+# "Stamping the route marker where the producer cannot", so the `resource`
+# processor the binary links and no role profile wires has something that
+# exercises it end to end.
 # Reading that section is the prerequisite for changing anything here: the
 # argument for the placement and the verb below lives there, not in this file.
 #
@@ -49,8 +50,9 @@ processors:
   #
   # What the scenario posts carries no `otelbox.telemetry.class` at all, so what
   # it proves is the stamp — the one outcome both verbs share. Precedence between
-  # them is a deployment's choice and is argued in docs/gateway.md; a test that
-  # asserted one of them here would be asserting a preference, not a contract.
+  # them is a deployment's choice and is argued in docs/reference/gateway.md; a
+  # test that asserted one of them here would be asserting a preference, not a
+  # contract.
   resource/llm:
     attributes:
       - key: otelbox.telemetry.class

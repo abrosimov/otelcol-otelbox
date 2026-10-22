@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "validator": "lynkeus-kadmou",
+  "repository": "https://github.com/abrosimov/agents-hooks-guard",
+  "contract": {
+    "package": "vault.v1",
+    "path": "proto/vault/v1/contract.proto",
+    "commit": "3c02008c6e9dba40297c3805f0add47b81c486a8",
+    "sha256": "e3e4fe0bb1246cf339b2bebb9af1139af00fece827c9de2566a6b0ad1b5bc1e0"
+  },
+  "documents": {
+    "discovery_filename": ".vault-spec.txtpb",
+    "root_message": "vault.v1.RootSpec",
+    "directory_message": "vault.v1.DirectorySpec"
+  }
+}

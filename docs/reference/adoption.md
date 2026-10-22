@@ -1,3 +1,11 @@
+---
+note_id: "20261022090400"
+created: 2026-10-22
+type: note
+subtype: reference
+language: en
+retention: active
+---
 # Adopting `otelcol-otelbox` 2.0
 
 Version 2.0 is a configuration-contract break. Upgrade the binary and each

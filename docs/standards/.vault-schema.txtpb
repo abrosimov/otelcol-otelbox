@@ -1,0 +1,33 @@
+# standards/.vault-schema.txtpb -- delta for the `standard` subtype.
+# A normative form standard that instances inherit. One home directory per
+# subtype: standards/ is the home of `standard`.
+# Lifecycle: the body is immutable once landed on the default branch; a content
+# change is a supersession -- the old note's frontmatter gets status: superseded
+# + superseded_by, the successor carries the reason.
+type {
+  subtype: "standard"
+  typed: false
+  field {
+    name: "status"
+    required: REQUIRED
+    kind: ENUM
+    enum: "draft"
+    enum: "active"
+    enum: "superseded"
+  }
+  field {
+    name: "superseded_by"
+    required: OPTIONAL
+    kind: WIKILINK
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "superseded"
+    required_field: "superseded_by"
+  }
+  conditional_field {
+    when_field: "status"
+    when_value: "active"
+    forbidden_field: "superseded_by"
+  }
+}

@@ -1,0 +1,18 @@
+# Reference documentation of otelcol-otelbox (vault.v1 DirectorySpec). A `reference`
+# note describes the current contract of the role profiles under config/ and changes
+# in the same commit as the profile it describes, so its body is edited in place.
+#
+# Mutation: `mutable`, the last-resort mode of kadmos D-040, taken because these notes
+# track live configuration rather than record a claim at a point in time. D-040 lets
+# only an ancestor specification grant a weaker mode. The root .vault-spec.txtpb is a
+# kadmos-managed copy that grants none, and kadmos has no descendant extension point
+# yet (its roadmap item kind-package-and-extensions), so the grant is missing and this
+# declaration is a known schema finding until that extension point exists.
+admits { admits { names { values: ["reference"] } } }
+kinds {
+  values {
+    name: "reference"
+    field_set { intent: CLAUSE_INTENT_NARROW field_set: FIELD_SET_POLICY_CLOSED }
+  }
+}
+mutation { mutation: MUTATION_MODE_MUTABLE }

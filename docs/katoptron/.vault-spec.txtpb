@@ -1,0 +1,103 @@
+# Distributed as katoptron/.vault-spec.txtpb (capability katoptron). Home of
+# `katoptron-behaviour-case`, which the cadmus.v1 root declared globally because the
+# folder was not shipped; vault.v1 declares no kind at the root, so the folder is
+# shipped with this declaration alone (gap G-12, D-049).
+admits { admits { names { values: ["katoptron-behaviour-case"] } } }
+kinds {
+  values {
+    name: "katoptron-behaviour-case"
+  field_set { intent: CLAUSE_INTENT_NARROW field_set: FIELD_SET_POLICY_CLOSED }
+  fields {
+    values {
+      name: "note_role"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "artifact" } } } }
+    }
+    values {
+      name: "artifact_kind"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "retrospective" } } } }
+    }
+    values {
+      name: "publication_status"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "published" } } } }
+    }
+    values {
+      name: "published_at"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } date { date: DATE_RULE_REQUIRED } }
+    }
+    values {
+      name: "status"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "active" } values { string_value: "superseded" } } } }
+    }
+    values {
+      name: "superseded_by"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } edge { edge { shape: EDGE_SHAPE_SCALAR target_kinds {} must_resolve: true acyclic: false cardinality { minimum: 0 maximum: 1 } } } }
+    }
+    values {
+      name: "authorship"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "agent" } } } }
+    }
+    values {
+      name: "assistant"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } }
+    }
+    values {
+      name: "session_id"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } }
+    }
+    values {
+      name: "model_provider"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "model"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "reasoning_effort"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "interface"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "cli_version"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "session_started_at"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } }
+    }
+    values {
+      name: "source_refs"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } edge { edge { shape: EDGE_SHAPE_SEQUENCE target_kinds {} must_resolve: true acyclic: false cardinality { minimum: 0 } } } }
+    }
+    values {
+      name: "related"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } edge { edge { shape: EDGE_SHAPE_SEQUENCE target_kinds {} must_resolve: true acyclic: false cardinality { minimum: 0 } } } }
+    }
+    values {
+      name: "evolved_from"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } edge { edge { shape: EDGE_SHAPE_SCALAR target_kinds {} must_resolve: true acyclic: false cardinality { minimum: 0 maximum: 1 } } } }
+    }
+  }
+  }
+}
