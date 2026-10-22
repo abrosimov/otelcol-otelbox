@@ -60,7 +60,38 @@ completeness, because no transport can undo a recipient's rejection:
 
 ## Langfuse idempotency
 
-Pending the source investigation recorded with this task.
+Read in the Langfuse source at `langfuse/langfuse@4d851c2` (2026-10-22):
+
+- **Identity.** The OTLP route stores the raw spans and queues them; a worker
+  converts each span to an observation whose id is the hex span ID
+  (`OtelIngestionProcessor.ts`, `parseId(span.spanId)`). A resent span gets the
+  same id.
+- **Duplicates.** Both write paths use ClickHouse `ReplacingMergeTree` keyed by
+  that id, so an identical copy collapses to one observation; reads use
+  `LIMIT 1 BY` until merges run. Cost and usage are computed per record and
+  billing counts distinct event ids, so a duplicate is not double-counted.
+  A replay under the same span ID is therefore safe.
+- **Differing copies.** The legacy path merges a later copy into the existing
+  observation; the direct path, chosen by newer SDK headers, replaces the whole
+  row and the copy processed last wins, so attributes missing from it are lost.
+  A replay must therefore resend the complete span, never a partial update. A
+  missing start or end timestamp is replaced by the receive time, which gives
+  each copy a different key: the producer must always set both.
+- **No partial success.** The endpoint never sets `partial_success`. It rejects
+  a malformed batch whole with 400, answers 403 when ingestion is suspended for
+  usage, 413 above its body limit, 429 with `Retry-After` for its rate limit,
+  503 when its object store throttles and 500 for other publishing failures.
+- **Loss after acknowledgement.** Spans can still be dropped after a 200, in
+  the asynchronous worker: schema failures, per-event write errors, masking
+  failures and ClickHouse writes that exhaust their retries are only logged.
+
+For Langfuse the middleware above would therefore report nothing: the
+recipient-side loss there is asynchronous and invisible to any OTLP client.
+Only the producer engine's reconciliation against Langfuse's API, replaying
+complete spans under their original span IDs, closes it. The middleware stays
+worth building for recipients that do return partial success. The 403 suspension
+is retried on the long authentication interval, so a usage stop holds data in
+the WAL rather than dropping it.
 
 ## Evidence to attach
 
