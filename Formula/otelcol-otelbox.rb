@@ -18,13 +18,13 @@ class OtelcolOtelbox < Formula
   # The tag is spelled out rather than derived from `version`: the URL must
   # precede the version line, so there is nothing to read yet, and every other
   # way of deriving it costs a `brew style` offence.
-  url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v2.4.2/otelcol-otelbox_darwin_arm64"
+  url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v2.5.0/otelcol-otelbox_darwin_arm64"
   # Mirrors dist.version in builder.yaml, the single source of truth. It says
   # nothing about the upstream collector inside; that lives in the gomod pins.
-  version "2.4.2"
+  version "2.5.0"
   # CI writes this after publishing: a checksum cannot exist before the bytes it
   # describes. Hand-editing it only makes it stale.
-  sha256 "a87955c715c56800f0cf14053f6a599e5c9c25c384ec39449ed810eb18e9bcbe"
+  sha256 "e52f0ae1b932ed5edbe4f89975b708f08c78d5cbc25867efa2f27174738412fa"
 
   # The release ships one binary per target and this formula wants the macOS
   # one, so the platform is a hard requirement rather than a conditional `url`.
@@ -34,8 +34,8 @@ class OtelcolOtelbox < Formula
   # A release asset rather than the tag's source tarball: GitHub regenerates
   # those on cache miss, and their bytes have moved under a pinned digest before.
   resource "config" do
-    url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v2.4.2/otelcol-otelbox_config.tar.gz"
-    sha256 "b559abda32e9dcb996d061b86deb27fddabf5e44501eb5cf2e5ef80d9d30ac13"
+    url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v2.5.0/otelcol-otelbox_config.tar.gz"
+    sha256 "672961bf77ca41dbfb963e01542b8e2efb8e0ccee9a357d626d91c302219b1df"
   end
 
   def install
