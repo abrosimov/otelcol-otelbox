@@ -56,17 +56,21 @@
 //  5. A non-empty allowlist replacement activates the new token and revokes the
 //     previous one, including the final-client revocation operation.
 //
-// TestEdgePersistsAcceptedDataBeforeAcknowledgement: a record accepted while
-// the gateway is unavailable survives an edge SIGKILL and is delivered after
-// the gateway and edge start. The forced kill is the assertion's boundary: a
-// graceful shutdown would flush an in-memory processor batch and could let a
-// non-durable pipeline pass.
+// TestEdgePersistsAcceptedDataBeforeAcknowledgement: a log record, a span and
+// a metric point, each sent once over OTLP/HTTP and once over OTLP/gRPC and
+// accepted while the gateway is unavailable, survive an edge SIGKILL and are
+// delivered after the gateway and edge start. The gRPC calls use the
+// standard-library client in grpc_test.go. The forced kill is the assertion's
+// boundary: a graceful shutdown would flush an in-memory processor batch and
+// could let a non-durable pipeline pass.
 //
 // TestGatewayPersistsSelectedTraceBeforeAcknowledgement applies the same
 // SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
 //
 // TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement applies that boundary
-// to the signal-specific log, metric and trace gRPC WALs in one crash.
+// to the signal-specific log, metric and trace gRPC WALs in one crash, for
+// records admitted over both OTLP/HTTP and OTLP/gRPC, after requiring a gRPC
+// export without a token to be Unauthenticated.
 //
 // TestGatewayRedaction posts logs, traces and metrics directly to the gateway
 // without the bypass above. It proves the same configured corpus on the
@@ -87,6 +91,43 @@
 // middle one is what makes the certificate load-bearing rather than
 // decorative: without it the first would pass whether or not the exporter
 // offered anything.
+//
+// TestEdgeReportsStorageVolumeSpace requires the edge's host_metrics/storage
+// points, filesystem usage and utilisation with their mountpoint, to reach the
+// gateway: the capacity signal a macOS workstation has.
+//
+// TestEdgeConcurrentAdmissionKeepsEveryRecord admits 200 log records from
+// eight concurrent producers while the gateway is down, kills the edge and
+// requires every acknowledged record after restart.
+//
+// TestEdgeStorageLimitKeepsAcknowledgedRecords fills the edge WAL to its
+// file_storage max_size while the gateway is down. The first record that does
+// not fit must be refused, not acknowledged, and every record acknowledged
+// before it must reach the sink once the gateway returns.
+//
+// TestGatewayResendsWhenRecipientAcknowledgementIsLost kills the gateway after
+// the selected-traces recipient received a record but before it answered; the
+// restarted gateway must send the record again. A duplicate is the contract.
+//
+// TestRecipientHTTP500IsRetriedUntilDelivered requires an admitted record that
+// met one HTTP 500 to be sent again and delivered, not dropped as permanent.
+// TestRecipientPartialSuccessCountsAsDelivered pins what the pinned HTTP
+// exporter does with a partial success: it is logged, counted as sent and not
+// retried. That describes current behaviour, not the desired contract; the
+// audit in docs/research records the open question.
+//
+// TestGatewayMixedTraceRequestIsOneAcknowledgementUnit fills the
+// selected-traces queue while its recipient holds every answer, then sends one
+// request carrying a classified and an unclassified resource: it must not be
+// acknowledged. After recovery the retried request is admitted, the classified
+// span reaches both recipients and the unclassified one only the all-signal
+// recipient.
+//
+// TestProducerIdentitySurvivesTheCollector sends a classified span through
+// edge and gateway and requires its trace, span, parent and link IDs and its
+// producer attributes at both recipients, including OpenInference and GenAI
+// token-usage keys that redaction exempts. A blocked key outside those
+// exemptions still masks a value of any type.
 //
 // TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
 // exercises the `resource` processor, which the binary links and no role profile

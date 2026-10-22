@@ -194,7 +194,7 @@ jobs:
       - name: Check workflow source
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          "$(go env GOPATH)/bin/actionlint" .github/workflows/otelcol-otelbox.yml
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/otelcol-otelbox.yml .github/workflows/redaction-conventions.yml
 
       - name: Check the Go contract tool
         working-directory: tools/ci

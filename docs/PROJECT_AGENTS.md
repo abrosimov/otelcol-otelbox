@@ -18,11 +18,10 @@ revision, never by local edit.
 | --- | --- | --- |
 | `reference/` | `reference` notes: the role guides, the redaction boundary and the adoption guide. They describe the current profiles and change in the same commit as the profile they describe. | `mutable` |
 | `roadmaps/` | `roadmap-item` notes: the roadmap and, under `tasks/`, deferred design tasks. | `immutable` |
+| `research/` | `agent-artifact` research notes from `templates/ai_research_template.md`; `problem-cards/` holds FPF C.22.2 ProblemCards in their thin form. | `immutable` |
 
 A new kind of note gets a directory of its own with a `.vault-spec.txtpb`
-declaring it, and a row here. Agent-authored research uses the Kadmos
-`agent-artifact` kind from `templates/ai_research_template.md`; its directory is
-declared here when the first such note lands.
+declaring it, and a row here.
 
 ## Known schema findings
 

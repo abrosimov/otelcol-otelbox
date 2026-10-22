@@ -206,7 +206,10 @@ deliberate private plaintext must be stated in the rendered configuration.
 Outbound gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses
 retain the affected request in its recipient WAL and retry at
 `OTELBOX_AUTH_RETRY_INTERVAL`. Replacing a watched outbound header file takes
-effect without restarting the gateway. This is at-least-once delivery: a lost
+effect without restarting the gateway. A recipient's server error (HTTP 5xx,
+gRPC `Internal` or `Unknown`) is retried on the ordinary backoff through
+`retry_on_server_error`; a recipient that fails every attempt therefore holds
+its queue, and the queue-fill alert is what reports it. This is at-least-once delivery: a lost
 success response may produce a duplicate at the recipient.
 
 ## Required delivery and coupling

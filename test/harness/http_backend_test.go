@@ -60,6 +60,25 @@ type selectedTraceBackend struct {
 	bodies   [][]byte
 	failures []string
 	serveErr error
+	// reply, when set, decides the answer to each accepted request after its
+	// body is recorded. Nil answers 200 with an empty body.
+	reply func(body []byte) backendReply
+}
+
+// backendReply is the selected-traces double's answer to one request. A
+// non-nil hold delays the answer until it is closed, which lets a test kill
+// the gateway after the recipient has the data but before its exporter sees
+// the acknowledgement.
+type backendReply struct {
+	status int
+	body   []byte
+	hold   <-chan struct{}
+}
+
+func (b *selectedTraceBackend) setReply(reply func(body []byte) backendReply) {
+	b.mu.Lock()
+	b.reply = reply
+	b.mu.Unlock()
 }
 
 func startSelectedTraceBackend(t *testing.T, contract selectedTraceContract) *selectedTraceBackend {
@@ -139,10 +158,23 @@ func (b *selectedTraceBackend) receive(response http.ResponseWriter, request *ht
 
 	b.mu.Lock()
 	b.bodies = append(b.bodies, body)
+	reply := b.reply
 	b.mu.Unlock()
 
+	answer := backendReply{status: http.StatusOK}
+	if reply != nil {
+		answer = reply(body)
+	}
+	if answer.hold != nil {
+		select {
+		case <-answer.hold:
+		case <-request.Context().Done():
+			return
+		}
+	}
 	response.Header().Set("Content-Type", "application/x-protobuf")
-	response.WriteHeader(http.StatusOK)
+	response.WriteHeader(answer.status)
+	_, _ = response.Write(answer.body)
 }
 
 func (b *selectedTraceBackend) reject(response http.ResponseWriter, failure string, status int) {
@@ -162,6 +194,20 @@ func (b *selectedTraceBackend) contains(marker string) bool {
 		}
 	}
 	return false
+}
+
+// count reports how many requests carried marker.
+func (b *selectedTraceBackend) count(marker string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n := 0
+	for _, body := range b.bodies {
+		if strings.Contains(string(body), marker) {
+			n++
+		}
+	}
+	return n
 }
 
 func (b *selectedTraceBackend) diagnostics() string {

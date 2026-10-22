@@ -14,7 +14,10 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	edgeStorage := filepath.Join(state, "edge-storage")
 
 	token := "otelbox-ci-durable-" + randomHex(t, 16)
-	marker := "otelbox-ci-durable-" + randomHex(t, 8)
+	run := "otelbox-ci-durable-" + randomHex(t, 8)
+	logMarker := run + "-log"
+	traceMarker := run + "-trace"
+	metricMarker := run + "-metric"
 	gatewayEndpoint := fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort)
 
 	writeTokenFile(t, tokenFile, token)
@@ -55,8 +58,31 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	if err := poll(readyTimeout, edge, "the edge's health endpoint", edgeHealthy); err != nil {
 		t.Fatalf("the edge never became healthy: %v", err)
 	}
+	// One record per signal: each signal has its own bbolt file, so a log
+	// proving durable says nothing about the trace and metric queues.
 	if !sendOrFail(t, "durability assertion", edgeHTTPPort,
-		logPayload(t, marker, "record acknowledged before a forced restart")) {
+		logPayload(t, logMarker, "record acknowledged before a forced restart")) {
+		return
+	}
+	if !sendTraceOrFail(t, "trace durability assertion", edgeHTTPPort,
+		tracePayload(t, traceMarker, false)) {
+		return
+	}
+	if !sendMetricOrFail(t, "metric durability assertion", edgeHTTPPort,
+		metricPayload(t, metricMarker)) {
+		return
+	}
+	// The same three signals over OTLP/gRPC, which has its own transport,
+	// framing and status mapping in front of the shared Export functions.
+	// Distinct prefixes: an HTTP marker must not be a substring of a gRPC one, or
+	// one record would satisfy both assertions.
+	grpcMarkers := []string{run + "-grpclog", run + "-grpctrace", run + "-grpcmetric"}
+	if !grpcSendOrFail(t, "gRPC log durability assertion", edgeGRPCPort, grpcLogsMethod, "",
+		grpcLogsMessage(grpcMarkers[0], "gRPC record acknowledged before a forced restart")) ||
+		!grpcSendOrFail(t, "gRPC trace durability assertion", edgeGRPCPort, grpcTracesMethod, "",
+			grpcTraceMessage(t, grpcMarkers[1])) ||
+		!grpcSendOrFail(t, "gRPC metric durability assertion", edgeGRPCPort, grpcMetricsMethod, "",
+			grpcMetricsMessage(grpcMarkers[2])) {
 		return
 	}
 
@@ -97,10 +123,12 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	if err := poll(readyTimeout, restartedEdge, "the restarted edge's health endpoint", edgeHealthy); err != nil {
 		t.Fatalf("the restarted edge never became healthy: %v", err)
 	}
-	if err := poll(deliveryTimeout, restartedEdge, "persisted marker "+marker+" to reach the sink", func() bool {
-		return sinkContains(t, sink, marker)
-	}); err != nil {
-		t.Fatalf("marker %s was acknowledged before the crash but did not survive it: %v", marker, err)
+	for _, marker := range append([]string{logMarker, traceMarker, metricMarker}, grpcMarkers...) {
+		if err := poll(deliveryTimeout, restartedEdge, "persisted marker "+marker+" to reach the sink", func() bool {
+			return sinkContains(t, sink, marker)
+		}); err != nil {
+			t.Fatalf("marker %s was acknowledged before the crash but did not survive it: %v", marker, err)
+		}
 	}
 }
 
@@ -256,6 +284,38 @@ func TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement(t *testing.T) {
 			t.Fatalf("the gateway refused the %s request before its recipient returned (HTTP %d): %s",
 				test.name, status, body)
 		}
+	}
+
+	// The same three signals over OTLP/gRPC. The gRPC service shares the HTTP
+	// handlers' Export functions, but the transport, framing and status mapping
+	// are its own, and an authenticator that admitted gRPC without a token would
+	// make every assertion below vacuous.
+	if status, _, err := grpcExport(ordinaryGatewayGRPCPort, grpcLogsMethod, "", grpcLogsMessage("unauthenticated", "")); err != nil || status != grpcStatusUnauthenticated {
+		t.Fatalf("precondition: an OTLP/gRPC export without a token must be Unauthenticated (16), got status %d, error %v", status, err)
+	}
+	grpcTests := []struct {
+		name    string
+		marker  string
+		method  string
+		message []byte
+	}{
+		{name: "gRPC logs", marker: "otelbox-ci-ordinary-grpclog-" + randomHex(t, 8), method: grpcLogsMethod},
+		{name: "gRPC metrics", marker: "otelbox-ci-ordinary-grpcmetric-" + randomHex(t, 8), method: grpcMetricsMethod},
+		{name: "gRPC traces", marker: "otelbox-ci-ordinary-grpctrace-" + randomHex(t, 8), method: grpcTracesMethod},
+	}
+	grpcTests[0].message = grpcLogsMessage(grpcTests[0].marker, "ordinary gRPC log persisted before acknowledgement")
+	grpcTests[1].message = grpcMetricsMessage(grpcTests[1].marker)
+	grpcTests[2].message = grpcTraceMessage(t, grpcTests[2].marker)
+	for _, test := range grpcTests {
+		if !grpcSendOrFail(t, test.name+" before its recipient returned", ordinaryGatewayGRPCPort, test.method, token, test.message) {
+			t.FailNow()
+		}
+		tests = append(tests, struct {
+			name    string
+			marker  string
+			payload []byte
+			post    func(*http.Client, int, string, []byte) (int, string, error)
+		}{name: test.name, marker: test.marker})
 	}
 	gateway.crash(t)
 

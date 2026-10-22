@@ -41,7 +41,7 @@ location are supplied through `${env:...}` references.
 | --- | --- |
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
-| `internal/exporters/` | Thin OTLP exporter wrappers that retain auth failures and retry after a long interval. |
+| `internal/exporters/` | Thin OTLP exporter wrappers that retain auth failures and retry after a long interval, and retry server errors on the ordinary backoff. |
 | `tools/ci/` | Tested Go contract checks for shared profile regions and built-binary contents. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
 | `test/config/` | CI-only overlays and backend doubles used by the harness. |
@@ -63,9 +63,11 @@ retains an outage up to its WAL capacity and rejects new samples once full.
 Outbound authentication failures are graceful degradation, not a drop path.
 gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 retain the accepted
 request and retry every `${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}`. Replacing the
-watched credential file lets the live process drain its queue. Other permanent
-protocol errors still fail permanently so a malformed payload cannot block all
-later data. The transport is at least once: a lost success response can cause a
+watched credential file lets the live process drain its queue. Server errors,
+HTTP 5xx and gRPC `Internal`/`Unknown`, retry on the ordinary backoff through
+`retry_on_server_error` instead of dropping admitted data. Other permanent
+protocol errors, such as HTTP 400 or 413, still fail permanently so a malformed
+payload cannot block all later data. The transport is at least once: a lost success response can cause a
 duplicate, and exactly-once delivery would require recipient-side idempotency.
 
 Gateway recipient eligibility is part of required delivery. Ordinary signals

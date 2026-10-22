@@ -42,6 +42,19 @@ connection-string names. Value patterns recognise Basic and Bearer credentials,
 URLs with user information, common `name=value` secret assignments and PEM
 private-key blocks.
 
+A matching key masks its whole value whatever its type, so an integer becomes
+the string `****`. Semantic-convention keys whose `token` segment names a
+model token rather than a credential are exempt through `ignored_keys`: the
+OpenInference `llm.token_count.*` and `decision.token_count.*` usage counts,
+the GenAI `gen_ai.token.modality` and its deprecated predecessor
+`gen_ai.token.type`. An ignored key also skips value scanning, so the list is
+exact and limited to numbers and enumerations. `gen_ai.usage.*` needs no
+exemption: its segment is `tokens`. The OpenInference message and reasoning
+signatures stay masked on purpose; `tools/ci/redaction-exceptions.tsv` records
+why. The `redaction-conventions` workflow checks the list weekly against the
+current OpenInference and OpenTelemetry GenAI conventions and fails when a
+convention adds a key the patterns would mask, or drops one the list exempts.
+
 The list is intentionally not an entropy detector. Unknown vendor formats,
 encoded or encrypted payloads, misspelled keys and secrets split across fields
 can pass. Broad fragments such as `api` are not blocked: they corrupt ordinary

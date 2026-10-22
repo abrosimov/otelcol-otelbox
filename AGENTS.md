@@ -28,8 +28,8 @@ wider telemetry estate, except for the historical Homebrew tap label:
 `internal/exporters/` contains thin wrappers around the pinned standard OTLP
 gRPC and HTTP exporters. The wrappers own the persistent queue and retry sender,
 disable those layers in the inner exporter and reclassify only authentication
-failures. `test/harness/` remains a separate, stdlib-only Go module that drives
-the built binary from outside.
+failures and server errors. `test/harness/` remains a separate, stdlib-only Go
+module that drives the built binary from outside.
 
 ## Map
 
@@ -46,6 +46,7 @@ the built binary from outside.
 | `Dockerfile` | Packages the CI-built Linux binary into `scratch`; never compiles. |
 | `Formula/otelcol-otelbox.rb` | Homebrew installation channel; release literals are CI-owned. |
 | `.github/workflows/otelcol-otelbox.yml` | Build, prove and publish graph. |
+| `.github/workflows/redaction-conventions.yml` | Weekly and on-change check of the redaction key list against the current semantic conventions; separate so a scheduled run can never publish. |
 
 ## Role contract
 
@@ -180,8 +181,17 @@ request and retry after `${env:OTELBOX_AUTH_RETRY_INTERVAL}`, whose default the
 profiles carry. It is a separate, far longer interval than the exporter's
 transient backoff, which the profiles also state. The watched credential file
 is read again before a later attempt, so replacing it can drain the queue
-without restarting the Collector. Other permanent errors remain permanent so
-an invalid payload cannot pin a queue forever.
+without restarting the Collector.
+
+Every outbound exporter also enables `retry_on_server_error`. The pinned
+exporters call HTTP 5xx and gRPC `Internal`/`Unknown` permanent, so one
+transient recipient failure dropped admitted data. The wrapper returns those
+to the ordinary backoff; the HTTP wrapper reads the status code from the
+upstream error message, which `TestClassifyErrorReadsTheUpstreamMessage` holds
+to the pinned release. A recipient that fails deterministically holds its queue
+until the deployment's queue alert fires. Other permanent errors, such as HTTP
+400 or 413, remain permanent so an invalid payload cannot pin a queue forever.
+`TestRecipientHTTP500IsRetriedUntilDelivered` is the regression guard.
 
 Delivery is at least once. If a recipient accepts a request but its success
 response is lost, retry can duplicate it; exactly-once delivery requires a
@@ -195,7 +205,12 @@ attributes; span and event attributes; scalar log bodies by value; and
 structured log bodies recursively. It does not inspect span/event names, span
 links, metric identity fields, exemplars or nested map/slice attribute values.
 `redact_all_types` stays false because a nested match would coerce the complete
-structured attribute to a string.
+structured attribute to a string. A blocked key masks a value of any type;
+`ignored_keys` exempts the exact semantic-convention token-usage keys, and
+`otelbox-ci redaction check`, run by the `redaction-conventions` workflow,
+holds that list to the current OpenInference and GenAI conventions. A new
+exemption or a deliberate exception (`tools/ci/redaction-exceptions.tsv`)
+needs the same harness evidence as a pattern change.
 
 The canonical carrier and threat boundary is `docs/reference/redaction.md`. Producers
 must source-sanitise unstructured text and must not place secrets in uncovered
@@ -220,6 +235,9 @@ such as `api`.
   because its producers are local.
 - One persistent gateway queue blocks on overflow and retries indefinitely.
 - `resource_detection` stamps the local origin before redaction.
+- `host_metrics/storage` reports filesystem usage and utilisation through
+  `metrics/self`. It is the only volume-space signal on macOS, where the host
+  agent cannot run; `TestEdgeReportsStorageVolumeSpace` guards it.
 
 ### Gateway
 
@@ -279,8 +297,9 @@ load and conceal adoption drift.
 Upstream module versions never appear in the artefact version. The workflow
 derives OCB's version from the `otlpreceiver` pin and rejects any other `gomod`
 pin, `UPSTREAM_VERSION` file or wrapper Collector requirement that disagrees.
-Go is pinned exactly — never to a range — in the workflow's `setup-go` steps,
-which are the one place to read or change it. The exact pin exists because a Go
+Go is pinned exactly — never to a range — in the workflows' `setup-go` steps,
+which are the one place to read or change it, and every step carries the same
+version. The exact pin exists because a Go
 patch release once mislinked this generated collector while the next patch built
 the same manifest successfully. The pin moves like any other dependency, on a
 green build.

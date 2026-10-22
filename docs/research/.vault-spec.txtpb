@@ -1,0 +1,6 @@
+# Research of otelcol-otelbox (vault.v1 DirectorySpec). Agent-authored research uses
+# the Kadmos `agent-artifact` kind, whose frontmatter contract the managed root
+# declares; this directory only admits it. problem-cards/ inherits this contract.
+# Bodies are immutable under the root default: a changed conclusion is a successor
+# note that names its predecessor in `evolved_from`.
+admits { admits { names { values: ["agent-artifact"] } } }

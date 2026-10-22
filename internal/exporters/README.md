@@ -1,9 +1,9 @@
-# OTLP authentication-retry wrappers
+# OTLP retry-classification wrappers
 
 The two modules in this directory wrap the unmodified standard OTLP gRPC and
 HTTP exporters. They preserve the canonical component types `otlp_grpc` and
 `otlp_http` and the existing profile configuration, including
-`retry_on_auth_failure`.
+`retry_on_auth_failure` and `retry_on_server_error`.
 
 Each wrapper creates two layers:
 
@@ -22,7 +22,11 @@ their standard lifecycle.
 The standard exporters still identify authentication responses as permanent.
 The wrapper unwraps that result and converts only gRPC `Unauthenticated` and
 `PermissionDenied`—including the HTTP 401 and 403 statuses mapped to those
-codes—into a throttled retry. Every other permanent response remains permanent.
+codes—into a throttled retry. With `retry_on_server_error`, it also returns
+server errors to the ordinary retry backoff: gRPC `Internal` and `Unknown`, and
+HTTP 5xx, whose status code the HTTP wrapper reads from the upstream error
+message because upstream maps every unnamed status to `Unknown`. Every other
+permanent response remains permanent.
 
 `UPSTREAM_VERSION`, the wrapper `go.mod` files and every component pin in
 `builder.yaml` form one dependency set. `otelbox-ci manifest resolve` rejects a
