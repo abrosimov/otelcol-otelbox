@@ -56,9 +56,9 @@
 //  5. A non-empty allowlist replacement activates the new token and revokes the
 //     previous one, including the final-client revocation operation.
 //
-// TestEdgePersistsAcceptedDataBeforeAcknowledgement: a record accepted while
-// the gateway is unavailable survives an edge SIGKILL and is delivered after
-// the gateway and edge start. The forced kill is the assertion's boundary: a
+// TestEdgePersistsAcceptedDataBeforeAcknowledgement: a log record, a span and
+// a metric point accepted while the gateway is unavailable survive an edge
+// SIGKILL and are delivered after the gateway and edge start. The forced kill is the assertion's boundary: a
 // graceful shutdown would flush an in-memory processor batch and could let a
 // non-durable pipeline pass.
 //
@@ -87,6 +87,11 @@
 // middle one is what makes the certificate load-bearing rather than
 // decorative: without it the first would pass whether or not the exporter
 // offered anything.
+//
+// TestEdgeStorageLimitKeepsAcknowledgedRecords fills the edge WAL to its
+// file_storage max_size while the gateway is down. The first record that does
+// not fit must be refused, not acknowledged, and every record acknowledged
+// before it must reach the sink once the gateway returns.
 //
 // TestStampedRouteMarkerSelectsAnUnclassifiedTrace is the only scenario that
 // exercises the `resource` processor, which the binary links and no role profile

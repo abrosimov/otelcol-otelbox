@@ -14,7 +14,10 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	edgeStorage := filepath.Join(state, "edge-storage")
 
 	token := "otelbox-ci-durable-" + randomHex(t, 16)
-	marker := "otelbox-ci-durable-" + randomHex(t, 8)
+	run := "otelbox-ci-durable-" + randomHex(t, 8)
+	logMarker := run + "-log"
+	traceMarker := run + "-trace"
+	metricMarker := run + "-metric"
 	gatewayEndpoint := fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort)
 
 	writeTokenFile(t, tokenFile, token)
@@ -55,8 +58,18 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	if err := poll(readyTimeout, edge, "the edge's health endpoint", edgeHealthy); err != nil {
 		t.Fatalf("the edge never became healthy: %v", err)
 	}
+	// One record per signal: each signal has its own bbolt file, so a log
+	// proving durable says nothing about the trace and metric queues.
 	if !sendOrFail(t, "durability assertion", edgeHTTPPort,
-		logPayload(t, marker, "record acknowledged before a forced restart")) {
+		logPayload(t, logMarker, "record acknowledged before a forced restart")) {
+		return
+	}
+	if !sendTraceOrFail(t, "trace durability assertion", edgeHTTPPort,
+		tracePayload(t, traceMarker, false)) {
+		return
+	}
+	if !sendMetricOrFail(t, "metric durability assertion", edgeHTTPPort,
+		metricPayload(t, metricMarker)) {
 		return
 	}
 
@@ -97,10 +110,12 @@ func TestEdgePersistsAcceptedDataBeforeAcknowledgement(t *testing.T) {
 	if err := poll(readyTimeout, restartedEdge, "the restarted edge's health endpoint", edgeHealthy); err != nil {
 		t.Fatalf("the restarted edge never became healthy: %v", err)
 	}
-	if err := poll(deliveryTimeout, restartedEdge, "persisted marker "+marker+" to reach the sink", func() bool {
-		return sinkContains(t, sink, marker)
-	}); err != nil {
-		t.Fatalf("marker %s was acknowledged before the crash but did not survive it: %v", marker, err)
+	for _, marker := range []string{logMarker, traceMarker, metricMarker} {
+		if err := poll(deliveryTimeout, restartedEdge, "persisted marker "+marker+" to reach the sink", func() bool {
+			return sinkContains(t, sink, marker)
+		}); err != nil {
+			t.Fatalf("marker %s was acknowledged before the crash but did not survive it: %v", marker, err)
+		}
 	}
 }
 
