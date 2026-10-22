@@ -80,6 +80,10 @@ require (
   go.opentelemetry.io/collector/exporter/otlpexporter v0.158.0
   go.opentelemetry.io/collector/component v1.64.0
 )
+require (
+  go.opentelemetry.io/collector v0.157.0 // indirect
+  go.opentelemetry.io/collector/featuregate v1.63.0 // indirect
+)
 `,
 		mixedUpstream: "module example\nrequire go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0\n",
 		mixedStable: `module example
