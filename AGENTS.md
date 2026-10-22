@@ -229,6 +229,9 @@ such as `api`.
   because its producers are local.
 - One persistent gateway queue blocks on overflow and retries indefinitely.
 - `resource_detection` stamps the local origin before redaction.
+- `host_metrics/storage` reports filesystem usage and utilisation through
+  `metrics/self`. It is the only volume-space signal on macOS, where the host
+  agent cannot run; `TestEdgeReportsStorageVolumeSpace` guards it.
 
 ### Gateway
 

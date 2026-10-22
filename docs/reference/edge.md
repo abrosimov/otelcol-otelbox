@@ -163,6 +163,24 @@ The harness forces this boundary: it posts a record while the gateway is down,
 requires HTTP 200, kills the edge with SIGKILL, reopens the same storage and
 requires the record to reach the gateway after recovery.
 
+## Capacity signals
+
+Alert before the WAL stops admitting data; the edge reports what that needs
+through its own `metrics/self` pipeline:
+
+| Signal | Metric | Suggested alert |
+| --- | --- | --- |
+| Queue fill | `otelcol_exporter_queue_size / otelcol_exporter_queue_capacity` for `otlp_grpc/gateway`; both are bytes under `sizer: bytes`, although they declare `{batch}` | above 0.5 |
+| Volume space | `system.filesystem.utilization` from `host_metrics/storage`, selected by the `mountpoint` that holds `OTELBOX_STORAGE_DIR` | above 0.8 |
+| Silence | absence of any point from this edge | longer than a few collection intervals |
+
+`file_storage` exports no metric for its file size or `max_size`, so volume
+space and queue fill stand in for it. These points travel through the queue
+they describe: when the gateway is unreachable they wait in the WAL with
+everything else, so only the silence alert fires during an outage, and the
+others must fire early enough for the queue to still drain. On macOS the WAL
+usually lives on the `/System/Volumes/Data` APFS volume, not `/`.
+
 ## Validate and operate
 
 Create the header file before validation so path handling is checked too:

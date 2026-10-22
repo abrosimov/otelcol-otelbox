@@ -92,6 +92,10 @@
 // decorative: without it the first would pass whether or not the exporter
 // offered anything.
 //
+// TestEdgeReportsStorageVolumeSpace requires the edge's host_metrics/storage
+// points, filesystem usage and utilisation with their mountpoint, to reach the
+// gateway: the capacity signal a macOS workstation has.
+//
 // TestEdgeConcurrentAdmissionKeepsEveryRecord admits 200 log records from
 // eight concurrent producers while the gateway is down, kills the edge and
 // requires every acknowledged record after restart.

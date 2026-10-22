@@ -3,9 +3,7 @@ package harness
 import (
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,68 +20,8 @@ import (
 // the GenAI convention's gen_ai.usage.input_tokens, whose segment is `tokens`,
 // arrives intact.
 func TestProducerIdentitySurvivesTheCollector(t *testing.T) {
-	state := t.TempDir()
-	sink := filepath.Join(state, "sink.json")
-	tokenFile := filepath.Join(state, "ingest-tokens")
-	token := "otelbox-ci-identity-" + randomHex(t, 16)
-
-	writeTokenFile(t, tokenFile, token)
-	authHeaderFile := writeAuthHeaderFile(t, filepath.Join(state, "edge-auth-header"), token)
-	chain := mintGatewayChain(t, state)
-	selectedContract := newSelectedTraceContract(t, state, selectedTraceEndpoint)
-	selectedBackend := startSelectedTraceBackend(t, selectedContract)
-
-	gatewayEnv := map[string]string{
-		"OTELBOX_INGEST_TOKEN_FILE":              tokenFile,
-		"OTELBOX_STORAGE_DIR":                    filepath.Join(state, "gateway-storage"),
-		"OTELBOX_CI_SINK":                        sink,
-		"OTELBOX_CI_GATEWAY_CERT_FILE":           chain.certFile,
-		"OTELBOX_CI_GATEWAY_KEY_FILE":            chain.keyFile,
-		"OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT": "127.0.0.1:34398",
-	}
-	selectedContract.addEnv(gatewayEnv)
-	gateway := startCollector(t, collectorSpec{
-		name:     "identity-gateway",
-		stateDir: state,
-		env:      gatewayEnv,
-		configs: []string{
-			configPath("config", "gateway.yaml"),
-			configPath("test", "config", "gateway-ci.yaml"),
-		},
-	})
-	edge := startCollector(t, collectorSpec{
-		name:     "identity-edge",
-		stateDir: state,
-		env: map[string]string{
-			"OTELBOX_STORAGE_DIR":               filepath.Join(state, "edge-storage"),
-			"OTELBOX_UPSTREAM_ENDPOINT":         fmt.Sprintf("127.0.0.1:%d", gatewayGRPCPort),
-			"OTELBOX_UPSTREAM_AUTH_HEADER_FILE": authHeaderFile,
-			"OTELBOX_CI_EDGE_CA_FILE":           chain.caFile,
-		},
-		configs: []string{
-			configPath("config", "edge.yaml"),
-			configPath("test", "config", "edge-ci.yaml"),
-		},
-	})
-	collectors := []*collector{gateway, edge}
-	defer func() {
-		if !t.Failed() {
-			return
-		}
-		dumpDiagnostics(t, []diagnosticSection{
-			{fmt.Sprintf("sink (%d bytes)", sinkSize(sink)), sinkTail(sink, 5)},
-			{"selected-traces backend", selectedBackend.diagnostics()},
-		}, collectors...)
-	}()
-
-	if err := poll(readyTimeout, gateway, "the gateway's OTLP/HTTP listener", func() bool {
-		return gatewayResponds(gatewayHTTPPort)
-	}); err != nil {
-		t.Fatalf("the gateway never accepted a connection: %v", err)
-	}
-	if err := poll(readyTimeout, edge, "the edge's health endpoint", edgeHealthy); err != nil {
-		t.Fatalf("the edge never became healthy: %v", err)
-	}
+	pair := startEdgeAndGateway(t, "identity")
+	edge, sink, selectedBackend := pair.edge, pair.sink, pair.selectedBackend
 
 	sent := newProducerSpan(t)
 	status, body, err := postTraces(sendClient, edgeHTTPPort, "", sent.payload(t))

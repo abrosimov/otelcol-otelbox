@@ -132,6 +132,28 @@ receivers:
             - targets:
                 - ${env:OTELBOX_BIND_HOST:-127.0.0.1}:8888
 
+  # Space on the volumes that may hold the WAL. The edge is the only role on
+  # macOS and file_storage exports no size metric, so this is how a workstation
+  # reports that its WAL is approaching a full disk. Every physical filesystem
+  # is reported; the deployment alerts on the mount point holding
+  # OTELBOX_STORAGE_DIR. These points leave through the same gateway queue they
+  # warn about, so the threshold must fire while that queue still drains, and
+  # the backend must also alert when the edge falls silent.
+  host_metrics/storage:
+    collection_interval: 60s
+    scrapers:
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+        # As in the host agent: one squashfs mount per snap would turn the
+        # series set over on every refresh.
+        exclude_fs_types:
+          match_type: strict
+          fs_types:
+            - overlay
+            - squashfs
+
 processors:
   # Origin, and origin is the one thing the roles do not share — running this on
   # the gateway would restamp relayed telemetry with the server's identity.
@@ -326,6 +348,6 @@ service:
     # This collector observing itself, on the same processors as everything
     # else: a scrape target label is an attribute too.
     metrics/self:
-      receivers: [prometheus/self]
+      receivers: [prometheus/self, host_metrics/storage]
       processors: [memory_limiter, resource_detection, redaction/secrets]
       exporters: [otlp_grpc/gateway]
