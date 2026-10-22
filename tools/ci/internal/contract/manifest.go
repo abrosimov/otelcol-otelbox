@@ -95,8 +95,16 @@ func CheckAdaptationModules(upstreamPin string, paths []string) (string, error) 
 		scanner := bufio.NewScanner(file)
 		collectorDependencies := 0
 		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
+			line := scanner.Text()
+			fields := strings.Fields(line)
 			if len(fields) < 2 || !strings.HasPrefix(fields[0], "go.opentelemetry.io/collector") {
+				continue
+			}
+			// An indirect requirement is selected by an upstream module's own
+			// go.mod, not declared here: v0.163.0 of otlpexporter still
+			// requires the root collector module at v0.162.0. Only direct
+			// requirements state which release a wrapper adapts.
+			if strings.HasSuffix(strings.TrimSpace(line), "// indirect") {
 				continue
 			}
 			collectorDependencies++
