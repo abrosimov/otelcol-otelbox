@@ -57,8 +57,10 @@
 //     previous one, including the final-client revocation operation.
 //
 // TestEdgePersistsAcceptedDataBeforeAcknowledgement: a log record, a span and
-// a metric point accepted while the gateway is unavailable survive an edge
-// SIGKILL and are delivered after the gateway and edge start. The forced kill is the assertion's boundary: a
+// a metric point, each sent once over OTLP/HTTP and once over OTLP/gRPC and
+// accepted while the gateway is unavailable, survive an edge SIGKILL and are
+// delivered after the gateway and edge start. The gRPC calls use the
+// standard-library client in grpc_test.go. The forced kill is the assertion's boundary: a
 // graceful shutdown would flush an in-memory processor batch and could let a
 // non-durable pipeline pass.
 //
@@ -66,7 +68,9 @@
 // SIGKILL boundary to the selected-traces HTTP recipient and its own WAL.
 //
 // TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement applies that boundary
-// to the signal-specific log, metric and trace gRPC WALs in one crash.
+// to the signal-specific log, metric and trace gRPC WALs in one crash, for
+// records admitted over both OTLP/HTTP and OTLP/gRPC, after requiring a gRPC
+// export without a token to be Unauthenticated.
 //
 // TestGatewayRedaction posts logs, traces and metrics directly to the gateway
 // without the bypass above. It proves the same configured corpus on the

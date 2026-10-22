@@ -21,6 +21,7 @@ import (
 // run this test.
 const (
 	edgeHTTPPort = 34318
+	edgeGRPCPort = 34317
 	// Published by no role profile. test/config/edge-route-marker-ci.yaml adds
 	// this listener the way a deployment would, and only that scenario loads it.
 	edgeClassifiedHTTPPort = 34319
@@ -37,6 +38,7 @@ const (
 	couplingGatewayHTTPPort    = 34348
 	couplingGatewayMetricsPort = 34899
 	ordinaryGatewayHTTPPort    = 34358
+	ordinaryGatewayGRPCPort    = 34357
 	ordinaryGatewayMetricsPort = 34909
 	hostAgentHealthPort        = 34134
 	hostAgentMetricsPort       = 34910
