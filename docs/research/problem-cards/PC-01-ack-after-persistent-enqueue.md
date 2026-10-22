@@ -45,6 +45,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Edge logs over HTTP survive SIGKILL immediately after 200. | `TestEdgePersistsAcceptedDataBeforeAcknowledgement` | proven by test |
 | Gateway logs, metrics, traces and selected traces over HTTP survive SIGKILL immediately after 200. | `TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement`, `TestGatewayPersistsSelectedTraceBeforeAcknowledgement` | proven by test |
 | Edge spans and metric points over HTTP, and edge and gateway logs, spans and metric points over OTLP/gRPC, survive SIGKILL immediately after success. | `TestEdgePersistsAcceptedDataBeforeAcknowledgement`, `TestGatewayPersistsOrdinarySignalsBeforeAcknowledgement` (both extended in this audit) | proven by test |
+| Two hundred records admitted concurrently by eight producers survive SIGKILL without loss or overwrite. | `TestEdgeConcurrentAdmissionKeepsEveryRecord` | proven by test |
 
 ### Interpretation
 
