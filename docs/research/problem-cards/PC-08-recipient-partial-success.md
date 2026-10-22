@@ -31,7 +31,7 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Claim family | Anticipated-condition claim: rejected records in a partial-success response are logged at Warn and the request counts as sent, so they are dropped without retry. |
 | Why not a ticket | Partial success is a protocol outcome, not a failure the queue can retry. |
 | Acceptance probe | A recipient double answering `partial_success` with rejected items: the drop is visible only in the log and is not counted as `send_failed`. |
-| Next use | Characterised; the test pins today's behaviour. Recipients' use of partial success is an open protocol question for the producer contract. |
+| Next use | Planned: the visibility middleware and the division of responsibility for accounted telemetry are in [the partial-success task](../../roadmaps/tasks/partial-success-visibility.md). |
 
 ### Evidence
 
