@@ -1,0 +1,157 @@
+# Installed as .vault-spec.txtpb at the generated vault root (vault.v1 RootSpec).
+# The pair of this file is distribution/vault_schema.txtpb, the cadmus.v1 root that
+# is still distributed during the transition (D-049). Vault-level policy only: the
+# kind-name registry, the roles, the baseline every note carries, the entry-name and
+# validation-scope laws, retention and state implications. A kind contract lives in
+# the directory that holds notes of that kind.
+admits {
+  values: [
+    "standard",
+    "changelog-entry",
+    "agent-artifact",
+    "rule",
+    "katoptron-behaviour-case"
+  ]
+}
+# `rule` is deprecated (D-048) and `agent-artifact` is placed by the adopting project;
+# both are registry names without a contract here, as in the source vault.
+field_set { field_set: FIELD_SET_POLICY_OPEN }
+property_names: PROPERTY_NAME_POLICY_LOWER_SNAKE_CASE
+roles {
+  identity { property_name: "note_id" }
+  kind_claim { property_name: "subtype" }
+  typed_id { property_name: "aliases" }
+}
+baseline {
+  # The identity. cadmus.v1 also constrained the shape to ^[0-9]{14}([0-9]{3})?$ (gap
+  # G-3). The value must be a quoted string: cadmus.v1 declares note_id as a string and
+  # Lynkeus refuses a YAML integer, so notes that carried it unquoted were quoted (D-049).
+  values {
+    name: "note_id"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives {
+      presence { presence: PRESENCE_REQUIRED }
+      non_empty { non_empty: NON_EMPTY_REQUIRED }
+      unique { unique { selector: UNIQUE_SELECTOR_WHOLE_VALUE scope: UNIQUE_SCOPE_VAULT } }
+    }
+  }
+  # The top-level class (`meta` or `note`). Lynkeus has no two-level kind (gap G-1):
+  # the kind is `subtype`, and `type` stays an ordinary required property.
+  values {
+    name: "type"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_REQUIRED } }
+  }
+  values {
+    name: "subtype"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_REQUIRED } }
+  }
+  values {
+    name: "created"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_REQUIRED } date { date: DATE_RULE_REQUIRED } }
+  }
+  values {
+    name: "language"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "en" } } } }
+  }
+  # Compatibility for inherited managed standards only. Descendant templates omit
+  # it and it grants no authority.
+  values {
+    name: "gov_self_evolvement"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_OPTIONAL } membership { membership { scalar_kind: SCALAR_KIND_BOOLEAN values { boolean_value: true } values { boolean_value: false } } } }
+  }
+  values {
+    name: "aliases"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_OPTIONAL } }
+  }
+  # cadmus.v1 declared an empty closed tag vocabulary. Lynkeus cannot state an empty
+  # item set (gap G-8), so any string is admitted.
+  values {
+    name: "tags"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_OPTIONAL } list { list { minimum: 0 item { non_empty { non_empty: NON_EMPTY_REQUIRED } } } } }
+  }
+  # The retention model below names this property and the next; the baseline only
+  # admits them.
+  values {
+    name: "retention"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_OPTIONAL } }
+  }
+  values {
+    name: "retained_from"
+    admission { admission: FIELD_ADMISSION_ADMITTED }
+    primitives { presence { presence: PRESENCE_OPTIONAL } }
+  }
+}
+# Entry names. No kadmos decision states an entry-name policy and Lynkeus requires
+# one, so this one is permissive: every printable scalar outside the surrogate and
+# control ranges. Fragile names (a trailing full stop or an edge space) are rejected
+# (D-049).
+entry_names {
+  entry_names {
+    codepoint_ranges { first: 0x20 last: 0x7E }
+    codepoint_ranges { first: 0xA0 last: 0xD7FF }
+    codepoint_ranges { first: 0xE000 last: 0x10FFFF }
+    mixed_script: MIXED_SCRIPT_POLICY_ALLOWED
+    fragile_names: FRAGILE_NAME_POLICY_REJECTED
+  }
+}
+# Enforced, with the override granted so that templates/ can be indexed only. This
+# replaces config.validation_scope.excluded_root_directory for `templates`; the
+# other three root directories of that list are dot entries or absent; `artifacts`
+# has no counterpart (gap G-11).
+validation_scope { allow_override: true validation_scope: VALIDATION_SCOPE_ENFORCED }
+# D-045 (proposed) and config.validation_scope (in force): the instruction files at
+# any depth and the dot entries (.agents, .obsidian, the profile and root markers)
+# are outside the note population. They are part of the system; how to validate them
+# is a later decision. Remove this clause, or replace it, when it is taken.
+excluded_entries {
+  file_names { values: ["AGENTS.md", "CLAUDE.md", "PROJECT_AGENTS.md", "README.md"] }
+  dot_entries: true
+}
+# Mutation (D-033, note-lifecycle): immutable, and no weaker mode is granted, so no
+# directory of a descendant may declare one. The append-only event sections of an
+# open question and a Katoptron case are not stated (gap G-4 in D-049).
+mutation { mutation: MUTATION_MODE_IMMUTABLE }
+# Retention. D-028 (in force) declares the projection and the field; D-041 and
+# D-046 (proposed) set the dated layout and make the graveyard terminal. Lynkeus
+# states only the dated layout (gap G-9), so this block follows D-041 and D-046
+# and is ahead of the accepted decisions on exactly that point. Nothing is retained
+# today (archive/ and graveyard/ hold only .gitkeep), so no note conflicts with it.
+# `retained_from` is the name D-041 fixes.
+retention {
+  state_field: "retention"
+  former_path_field: "retained_from"
+  active_state: "active"
+  retained {
+    state: "archived"
+    root_directory: "archive"
+    layout: RETENTION_LAYOUT_YEAR_MONTH
+    may_return: true
+  }
+  retained {
+    state: "buried"
+    root_directory: "graveyard"
+    layout: RETENTION_LAYOUT_YEAR_MONTH
+    may_return: false
+  }
+}
+# State implications. D-033: a superseded note names its successor and is buried
+# (any kind whose declaration carries superseded_by; the requirement kind has no such
+# field and is buried only). D-034: a resolved open question is archived and names
+# its resolution. The remaining implications are the conditional_field rules of the
+# cadmus.v1 declarations of the form `when X is V, Y is required`. The inverse form
+# `when X is V, Y is forbidden` has no Lynkeus counterpart (gap G-2 in D-049).
+implications {
+  property: "status"
+  value: "superseded"
+  kinds { values: ["standard", "katoptron-behaviour-case"] }
+  retention_state: "buried"
+  requires { values: ["superseded_by"] }
+}

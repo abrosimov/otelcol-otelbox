@@ -1,0 +1,185 @@
+edition = "2023";
+
+// Marked for removal: the vault.v1 schema replaces this package (D-030).
+package cadmus.v1;
+
+// ============================================================================
+// EXTENSION CONTRACT
+//
+// A vault using `cadmus.v1` extends this contract and never redefines it:
+//
+// 1. Fields are add-only. A published field keeps its number, name, type and
+//    documented meaning forever. Never renumber, rename, retype or repurpose
+//    a field; never reuse a retired field's number or name -- retire it with
+//    `reserved` (number and name both).
+// 2. Enum values are add-only and are never redefined. A published enum value
+//    keeps its number, name and meaning; retirement is `reserved`, not
+//    deletion, and never a rename. Semantic change means a NEW value, with
+//    the old one kept or reserved.
+// 3. The same discipline binds the schema DATA layered on this shape. A
+//    frontmatter key, subtype name or enum string published in a
+//    .vault-schema.txtpb and carried by notes on the default branch is part
+//    of the contract: extend by adding, retire by documented deprecation --
+//    never rename in place, because notes already carrying it are records
+//    rather than changed in place.
+// 4. Widen `Kind`, not the engine (see below). A richer constraint enters as
+//    a new Kind value every renderer can check directly; no expression
+//    language, no engine-specific escape hatch.
+// 5. An adopting vault adds its own subtypes, fields and enum values on top; it
+//    never narrows or loosens what this package declares. Breaking any rule
+//    above requires a new major package, not an edit to this one.
+// ============================================================================
+
+// VaultSchema is the assembled vault contract: global config, the universal
+// note skeleton, and every declared subtype. The loader merges the root
+// .vault-schema.txtpb (config + skeleton + cross-cutting subtypes) with each
+// per-directory .vault-schema.txtpb (folder-bound subtypes) into one of these.
+//
+// A field constraint here is a deliberately small closed set (`Kind` + optional
+// enum/pattern) -- not an expression language. That is the whole point: the
+// constraint surface stays tiny enough that any renderer checks it directly, so
+// the schema shape stays language- and engine-independent. If a note ever needs
+// a richer constraint, widen `Kind`, not the engine.
+message VaultSchema {
+  int32 version = 1;
+  Config config = 2;
+
+  // The universal frontmatter -- applied to every note regardless of subtype.
+  repeated FieldDef skeleton = 3;
+
+  // One entry per subtype. Collected across the root file and every
+  // per-directory file; a duplicate subtype across files is a load error.
+  repeated TypeDef type = 4;
+}
+
+message Config {
+  NamingConvention naming_convention = 1;
+
+  // The closed tag vocabulary, declared once in the root file. A note's tags must
+  // be drawn from this set. Empty for now.
+  repeated string tags = 2;
+
+  // Files and root service directories outside the governed note population.
+  ValidationScope validation_scope = 3;
+
+  // Storage projection for each universal retention value.
+  repeated RetentionProjection retention_projection = 4;
+
+  // The code-anchor contract of standards/code-anchors.md, declared as data so
+  // that a renderer parses the marker and checks the vocabulary without a
+  // built-in table. Absent means the vault declares no anchors.
+  CodeAnchors code_anchors = 5;
+}
+
+// CodeAnchors declares how a file outside the vault ties itself to a note.
+// The declaration is one comment line:
+//   <comment> <marker>[<slug>|<relation>|<reference>] <message>
+// where <reference> is a kadmos:// URI (standards/cross-instance-references.md)
+// and <message> runs to the end of the line and is not parsed.
+message CodeAnchors {
+  // The token that opens a declaration, without the bracket: "ariadne-kadmou".
+  string marker = 1;
+
+  // Anchored regex every slug must match. A slug is unique per repository.
+  string slug_pattern = 2;
+
+  // Closed relation vocabulary; a descendant adds values, never redefines.
+  repeated string relation = 3;
+
+  // The frontmatter field a note uses to list the slugs of its own
+  // repository's anchors that name it: "anchored_by". Optional on every note;
+  // exact when present.
+  string reverse_field = 4;
+}
+
+message ValidationScope {
+  // Exact directory names excluded only when they are immediate children of the
+  // selected vault root.
+  repeated string excluded_root_directory = 1;
+
+  // Exact basenames excluded at any depth in the selected vault.
+  repeated string excluded_file_name = 2;
+}
+
+message RetentionProjection {
+  string state = 1;
+
+  // Empty means that the note stays outside every non-empty projection root.
+  // A non-empty value is one exact root directory.
+  string root_directory = 2;
+}
+
+// NamingConvention is the global typed-id formatting selected by schema data.
+message NamingConvention {
+  int32 zero_pad_width = 1;
+  string separator = 2;
+}
+
+// TypeDef declares one subtype: its extra fields on top of the skeleton, and
+// whether it carries a typed handle.
+message TypeDef {
+  // The `subtype` value this entry governs.
+  string subtype = 1;
+
+  // When true, `aliases` is required and must carry a handle matching id_prefix.
+  bool typed = 2;
+
+  // The typed-id prefix (for example, "TASK"). Set iff typed.
+  string id_prefix = 3;
+
+  // Fields this subtype adds on top of the skeleton.
+  repeated FieldDef field = 4;
+
+  // Presence rules whose condition and effect are both frontmatter fields.
+  repeated ConditionalFieldDef conditional_field = 5;
+}
+
+message ConditionalFieldDef {
+  string when_field = 1;
+  string when_value = 2;
+
+  oneof requirement {
+    string required_field = 3;
+    string forbidden_field = 4;
+  }
+}
+
+// FieldDef is one frontmatter field's contract.
+message FieldDef {
+  string name = 1;
+  Requirement required = 2;
+  Kind kind = 3;
+
+  // Closed value set when kind == ENUM.
+  repeated string enum = 4;
+
+  // Anchored regex the value must match (used for note_id). Optional.
+  string pattern = 5;
+}
+
+// Requirement is stated explicitly on every field.
+enum Requirement {
+  REQUIREMENT_UNSPECIFIED = 0;
+  REQUIRED = 1;
+  OPTIONAL = 2;
+  // Required only for subtypes whose TypeDef sets `typed` (e.g. aliases).
+  REQUIRED_IF_TYPED = 3;
+}
+
+// Kind is the small closed set of value shapes declared frontmatter uses.
+// Extension rule 4: a richer constraint is a new value HERE, checked directly
+// by every renderer -- never an engine-side special case.
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  STRING = 1;
+  DATE = 2;
+  BOOL = 3;
+  INT = 4;
+  ENUM = 5;
+  // A single "[[wiki-link]]" (may carry a |display and be quoted).
+  WIKILINK = 6;
+  // A list of "[[wiki-link]]" values (block or inline). Empty list allowed.
+  WIKILINK_LIST = 7;
+  // A list of plain strings.
+  STRING_LIST = 8;
+}

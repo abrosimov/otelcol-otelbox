@@ -1,0 +1,21 @@
+# Form standards that instances inherit. Home of `standard` (D-043, D-048). The body
+# is immutable once landed; a change is a supersession (D-033).
+admits { admits { names { values: ["standard"] } } }
+kinds {
+  values {
+    name: "standard"
+  field_set { intent: CLAUSE_INTENT_NARROW field_set: FIELD_SET_POLICY_CLOSED }
+  fields {
+    values {
+      name: "status"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_REQUIRED } membership { membership { scalar_kind: SCALAR_KIND_STRING values { string_value: "draft" } values { string_value: "active" } values { string_value: "superseded" } } } }
+    }
+    values {
+      name: "superseded_by"
+      admission { admission: FIELD_ADMISSION_ADMITTED }
+      primitives { presence { presence: PRESENCE_OPTIONAL } edge { edge { shape: EDGE_SHAPE_SCALAR target_kinds {} must_resolve: true acyclic: false cardinality { minimum: 0 maximum: 1 } } } }
+    }
+  }
+  }
+}

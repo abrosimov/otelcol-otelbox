@@ -1,0 +1,5 @@
+# Retention root (D-028, D-041). What decides a note's contract here is where it
+# lies, not what kind it is, so any registered kind may land. The root's retention
+# model makes the place a projection of `retention`. Bodies are immutable here
+# whatever the live directory allowed.
+admits { admits { any_registered_kind {} } }

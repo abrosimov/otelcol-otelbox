@@ -1,0 +1,4 @@
+# Note templates carry placeholders, not notes: indexed only, so no conformance
+# finding is raised for them. Replaces the `templates` entry of
+# config.validation_scope.excluded_root_directory.
+validation_scope { intent: CLAUSE_INTENT_OVERRIDE validation_scope: VALIDATION_SCOPE_INDEXED_ONLY }

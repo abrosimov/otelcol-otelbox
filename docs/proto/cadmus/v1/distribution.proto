@@ -1,0 +1,108 @@
+edition = "2023";
+
+// Marked for removal with the distribution redesign (D-030).
+package cadmus.v1;
+
+// DistributionManifest is the positive contract consumed by an external
+// materialiser. JSON carriers use these protobuf field names unchanged.
+message DistributionManifest {
+  uint32 format_version = 1;
+  string distribution_version = 2;
+  repeated DistributedDirectory directories = 3;
+  repeated GeneratedFile generated_files = 4;
+  repeated DistributedFile files = 5;
+  repeated DistributionCapability capabilities = 6;
+  repeated ValidationProfile validation_profiles = 7;
+  PlacementPolicy placement_policy = 8;
+}
+
+message DistributedDirectory {
+  string path = 1;
+  repeated string profiles = 2;
+}
+
+message GeneratedFile {
+  string destination = 1;
+  string kind = 2;
+  repeated string profiles = 3;
+}
+
+message DistributedFile {
+  string source = 1;
+  string destination = 2;
+  bool render = 3;
+  repeated string profiles = 4;
+}
+
+message DistributionCapability {
+  string name = 1;
+  repeated string profiles = 2;
+  repeated string members = 3;
+}
+
+// InstalledManifest is the profile projection carried by a generated vault.
+// It contains only installed paths and effective declarations; source paths and
+// rendering inputs remain in DistributionManifest at materialisation time.
+message InstalledManifest {
+  uint32 format_version = 1;
+  string distribution_version = 2;
+  string profile = 3;
+  ValidationProfile validation_profile = 4;
+  PlacementPolicy placement_policy = 5;
+
+  // Complete expected directory and regular-file sets for the selected
+  // profile. The file set includes this manifest and excludes the receipt.
+  repeated string managed_directory = 6;
+  repeated string managed_file = 7;
+  repeated InstalledCapability capability = 8;
+}
+
+message InstalledCapability {
+  string name = 1;
+  repeated string members = 2;
+}
+
+// ValidationProfile is selected by the generated .vault-profile marker.
+// Directory policy is data; the implementation must not recreate it from a
+// profile name.
+message ValidationProfile {
+  string name = 1;
+  repeated string required_root_directory = 2;
+  repeated string forbidden_root_directory = 3;
+}
+
+// PlacementPolicy declares the repository-relative locations admitted for a
+// vault. An implementation must not infer further names from convention.
+message PlacementPolicy {
+  // Ordered candidate basenames. Initial materialisation selects the first
+  // candidate whose immediate-child path does not exist; later validation
+  // checks membership, not whether an earlier candidate has since become free.
+  repeated string nested_child_preference = 1;
+
+  // Root placement is never an implicit fallback. The caller must select it
+  // explicitly for a repository whose whole tree is the vault.
+  bool allow_explicit_root_vault = 2;
+}
+
+// DistributionReceipt records only the outputs managed by one materialisation.
+// It is evidence for later comparison, never authority to overwrite a file.
+message DistributionReceipt {
+  string project_name = 1;
+  string profile = 2;
+  string distribution_version = 3;
+
+  // Complete managed regular-file census excluding this receipt itself.
+  repeated ManagedFile managed_files = 4;
+
+  // "." for a root vault, otherwise the admitted immediate child basename.
+  string repository_relative_vault_path = 5;
+}
+
+message ManagedFile {
+  // Unique vault-relative regular-file path. Receipt entries use ascending
+  // UTF-8 path-byte order.
+  string path = 1;
+
+  // Lowercase 64-character hexadecimal SHA-256 digest.
+  string sha256 = 2;
+}
