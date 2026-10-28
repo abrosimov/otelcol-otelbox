@@ -189,7 +189,7 @@ jobs:
       - name: Set up Node.js for the Renovate validator
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.11.1"
+          node-version: "26.12.1"
 
       - name: Check workflow source
         run: |
@@ -632,7 +632,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
-          version: v0.76.0
+          version: v0.76.1
           severity: HIGH,CRITICAL
           scanners: vuln
           ignore-unfixed: true
