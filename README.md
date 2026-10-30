@@ -28,7 +28,7 @@ files, Ansible, secret stores or machine-local rendered configuration. Those
 belong to the consuming repositories.
 
 The binary links only components used by a role or the black-box backend
-double: 4 receivers, 4 processors, 3 exporters, 4 extensions and no connectors.
+double: 4 receivers, 6 processors, 3 exporters, 4 extensions and no connectors.
 Adding a dormant capability is a deliberate size and support-contract decision.
 
 The role profiles are demonstrations of a deployment contract, not production
@@ -86,6 +86,12 @@ tell apart — a dedicated listener, a named scrape job, a journald unit set —
 2.3.0 links the `resource` processor without wiring it anywhere. A deployment
 renders its own instance on exactly that pipeline; see
 [stamping the route marker](docs/reference/gateway.md#stamping-the-route-marker-where-the-producer-cannot).
+
+A backend may also read a field from span attributes and nowhere else, which no
+`resource` instance can reach. 2.4.0 links the `transform` processor for that
+case, and 2.6.0 wires one instance of it in the edge role, supplying the two
+trace-level fields Langfuse resolves from span attributes only; see
+[Langfuse trace-level fields on native traces](docs/reference/edge.md#langfuse-trace-level-fields-on-native-traces).
 
 The binary deliberately does not link the `batch` processor. It acknowledges
 upstream before its in-memory batch reaches the exporter and logs, rather than

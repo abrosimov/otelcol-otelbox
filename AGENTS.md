@@ -243,6 +243,13 @@ such as `api`.
 - `host_metrics/storage` reports filesystem usage and utilisation through
   `metrics/self`. It is the only volume-space signal on macOS, where the host
   agent cannot run; `TestEdgeReportsStorageVolumeSpace` guards it.
+- `transform/langfuse_native` sits between `resource_detection` and
+  `redaction/secrets` on the `traces` pipeline alone. It writes
+  `langfuse.user.id` and `langfuse.trace.tags` as SPAN attributes, which is the
+  only place Langfuse reads those two from. Tags are a comma-separated string,
+  not a slice: `redact_all_types: false` does not inspect slices, so an array
+  would evade the deny-list every other attribute passes. `set` overwrites, so
+  a pipeline fed by a Langfuse SDK must not carry this instance.
 
 ### Gateway
 
@@ -283,7 +290,7 @@ such as `api`.
 Use the canonical component types of the Collector release the manifest pins.
 In current profiles these include
 `otlp_grpc` and `otlp_http` for exporters, `resource_detection`, `host_metrics`,
-`filter`, `file_storage`, `healthcheckv2`, `headers_setter`,
+`filter`, `transform`, `file_storage`, `healthcheckv2`, `headers_setter`,
 `bearertokenauth`, `prometheus` and `journald`. The OTLP receiver remains
 `otlp`. `health_check` is a separate, unlinked component, not an alias.
 
