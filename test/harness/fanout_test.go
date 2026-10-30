@@ -27,28 +27,8 @@ func TestGatewayMixedTraceRequestIsOneAcknowledgementUnit(t *testing.T) {
 		return backendReply{status: http.StatusOK, hold: release}
 	})
 
-	// Fill the queue in shrinking steps until a span the size of the mixed
-	// request no longer fits, so "full" means full for that request and not
-	// merely for a large one. A blocked post ends at the client's deadline.
 	shortClient := &http.Client{Timeout: 5 * time.Second}
-	admitted := 0
-	for _, padBytes := range []int{64 * 1024, 8 * 1024, 1024, 0} {
-		var extra []attribute
-		if padBytes > 0 {
-			extra = append(extra, attribute{Key: "otelbox.ci.padding", Value: otlpString{randomHex(t, padBytes)}})
-		}
-		for range 64 {
-			started := time.Now()
-			status, _, err := postTraces(shortClient, gatewayHTTPPort, scenario.token,
-				tracePayload(t, "otelbox-ci-fill-"+randomHex(t, 4), true, extra...))
-			if err != nil || status != http.StatusOK {
-				t.Logf("a %d-byte padded span blocked after %s (status %d, error %v)", 2*padBytes, time.Since(started).Round(time.Millisecond), status, err)
-				break
-			}
-			admitted++
-		}
-	}
-	t.Logf("%d padded spans admitted before the selected-traces queue refused an unpadded one", admitted)
+	fillSelectedQueue(t, scenario, shortClient)
 
 	classified := "otelbox-ci-mixed-llm-" + randomHex(t, 8)
 	unclassified := "otelbox-ci-mixed-plain-" + randomHex(t, 8)
@@ -85,6 +65,33 @@ func TestGatewayMixedTraceRequestIsOneAcknowledgementUnit(t *testing.T) {
 			t.Fatalf("span %s never reached the all-signal recipient: %v", marker, err)
 		}
 	}
+}
+
+// fillSelectedQueue fills the selected-traces queue, whose recipient must be
+// holding every answer, in shrinking steps until an unpadded span no longer
+// fits, so "full" means full for a small request and not merely for a large
+// one. A blocked post ends at the client's deadline.
+func fillSelectedQueue(t *testing.T, scenario *recipientScenario, client *http.Client) {
+	t.Helper()
+
+	admitted := 0
+	for _, padBytes := range []int{64 * 1024, 8 * 1024, 1024, 0} {
+		var extra []attribute
+		if padBytes > 0 {
+			extra = append(extra, attribute{Key: "otelbox.ci.padding", Value: otlpString{randomHex(t, padBytes)}})
+		}
+		for range 64 {
+			started := time.Now()
+			status, _, err := postTraces(client, gatewayHTTPPort, scenario.token,
+				tracePayload(t, "otelbox-ci-fill-"+randomHex(t, 4), true, extra...))
+			if err != nil || status != http.StatusOK {
+				t.Logf("a %d-byte padded span blocked after %s (status %d, error %v)", 2*padBytes, time.Since(started).Round(time.Millisecond), status, err)
+				break
+			}
+			admitted++
+		}
+	}
+	t.Logf("%d padded spans admitted before the selected-traces queue refused an unpadded one", admitted)
 }
 
 // mixedTracePayload is one OTLP/JSON trace request with two resources: one

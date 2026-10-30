@@ -37,7 +37,7 @@ refactor. Static Collector YAML cannot expand an environment variable into an
 arbitrary list, so the consuming repository renders the list explicitly.
 
 The selected-traces branch deliberately exposes only generic OTLP/HTTP,
-credential-file, arbitrary-header and filter capabilities. A consuming
+credential-file, arbitrary-header, filter and span deduplication capabilities. A consuming
 deployment owns the concrete backend endpoint, path, authorisation scheme,
 protocol values and version; none is part of this repository's reference
 contract.
@@ -143,6 +143,9 @@ Reference defaults apply only when a variable is absent:
 | `OTELBOX_RECIPIENT_STORAGE_MAX_SIZE_BYTES` | 12 GiB | Selected-traces WAL. |
 | `OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES` | 8 GiB | Selected-traces queue. |
 | `OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES` | 3 MiB | Sender split limit, below the common 4 MiB downstream gRPC default. |
+| `OTELBOX_SELECTED_TRACES_DEDUP_TTL` | `72h` | Minimum time a selected span stays known to `span_dedup/selected_traces`. |
+| `OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES` | 500000 | Span identities kept; also the index's heap ceiling, about 80 B each. |
+| `OTELBOX_SELECTED_TRACES_DEDUP_STORAGE_MAX_SIZE_BYTES` | 256 MiB | Deduplication index file. |
 
 The gateway profile assumes a cgroup memory limit. Set that limit in the
 deployment and set `GOMEMLIMIT` below it; otherwise a percentage of host memory
@@ -165,11 +168,12 @@ traces; the larger metrics ratio leaves additional room for database overhead.
 Gateway rates are aggregate across all edges and local agents; reusing an
 edge-sized budget without multiplying the measured ingress rate is incorrect.
 
-The reference topology has four bbolt files: three for the all-signal recipient
-and one for selected traces. Their configured caps total 38 GiB before
-filesystem and compaction headroom. A deployment with N all-signal recipients
-has `3N + 1` files and a default cap of `26 GiB * N + 12 GiB` while the
-selected-traces branch remains present. Size and alert from the rendered set.
+The reference topology has five bbolt files: three for the all-signal
+recipient, one for the selected-traces WAL and one for its deduplication index.
+Their configured caps total 38.25 GiB before filesystem and compaction
+headroom. A deployment with N all-signal recipients has `3N + 2` files and a
+default cap of `26 GiB * N + 12.25 GiB` while the selected-traces branch
+remains present. Size and alert from the rendered set.
 
 The default request ladder prevents a single accepted record from becoming
 unsendable after acknowledgement:
@@ -212,6 +216,18 @@ gRPC `Internal` or `Unknown`) is retried on the ordinary backoff through
 its queue, and the queue-fill alert is what reports it. This is at-least-once delivery: a lost
 success response may produce a duplicate at the recipient.
 
+An HTTP recipient that answers 429 or 503 with `Retry-After` is not sent the
+request again before that delay, even when it exceeds `max_interval`; the
+record stays in the WAL and is delivered after it. The pinned exporter turns
+the header into a throttled retry, which the wrappers pass through unchanged.
+A Retry-After in seconds or as an HTTP date is honoured; a 429 or 503 without
+one uses the ordinary backoff. A restart during the wait keeps the record, but
+the remaining delay is not persisted: the restarted gateway sends it at once.
+On a graceful stop during the wait upstream logs `Exporting failed. Dropping
+data.` with `interrupted due to shutdown`; that record is not dropped.
+`TestRecipientRetryAfterIsHonoured` and
+`TestRecipientRetryAfterWaitSurvivesARestart` hold this.
+
 ## Required delivery and coupling
 
 Every network exporter has its own persistent byte queue, infinite transient
@@ -224,6 +240,55 @@ traces, metrics and logs never enter its WAL. If one OTLP request contains both
 classified and unclassified trace resources, the request is one acknowledgement
 unit and can block on the selected recipient. The coupling and SIGKILL harness
 tests cover the queue-headroom, overflow and replay boundaries.
+
+## Duplicate removal on the selected-traces branch
+
+A recipient that stores every copy of a span turns each re-send into a second
+row. `span_dedup/selected_traces`, a processor this repository builds, sits
+after `filter/selected_traces` and drops a span whose `(trace_id, span_id)`
+the selected-traces exporter queue has already accepted. It removes producer
+replays and edge re-sends that reach the gateway again, provided the producer
+keeps a span's IDs on replay. Ordinary recipients are not deduplicated.
+
+- **Never a loss.** A span is remembered only after the exporter's persistent
+  queue accepted it. A refused attempt, such as a full queue or an expired
+  request, is not remembered, so its retry passes. Two concurrent requests
+  carrying the same span may both pass; that is a duplicate, not a loss. A
+  repeated span inside one request is sent once. A span with an all-zero trace
+  or span ID is never dropped or remembered.
+- **Storage failure.** If the index cannot be written after the queue accepted
+  the spans, the request fails with a retryable error and the producer retries.
+  The running gateway already remembers those spans, so the retry is not
+  enqueued twice, and the next successful write persists them. A storage error
+  while loading the index at start fails the start; an undecodable index or
+  segment is discarded with a warning, which can only admit duplicates.
+- **Retention.** A remembered span stays known for at least
+  `OTELBOX_SELECTED_TRACES_DEDUP_TTL` and at most one sixteenth of it longer,
+  and the oldest go first once `OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES` is
+  reached. Producer replays retry every few minutes but may replay a
+  transcript hours later; 72 hours also covers a workstation closed over a
+  weekend. 500,000 identities hold the full 72 hours at up to about 7,000
+  selected spans an hour while capping the heap at about 40 MiB. Above that
+  rate the effective window shortens, so size the cap from the selected span
+  rate times the TTL.
+- **Persistence.** The index is stored through `file_storage/selected_traces_dedup`
+  as a FIFO of segments of up to 1,024 identities, rewritten as they fill, and is
+  read back into memory at start. Each accepted request writes its open segment
+  once, under fsync. Lists replace rather than merge, so a rendered
+  configuration that restates `service.extensions` must keep
+  `file_storage/selected_traces_dedup`, or the gateway refuses to start.
+- **Metrics.** `otelcol_processor_span_dedup_duplicate_spans` (Prometheus
+  `_total`), labelled `processor="span_dedup/selected_traces"`, counts dropped
+  duplicates.
+
+One window remains. The processor runs before the exporter queue, so a resend
+from that queue is invisible to it: when the recipient stores a request but its
+success response is lost, through a gateway crash, a timeout or a broken
+connection, the gateway sends the request again and the recipient receives a
+second copy (PC-11, `TestGatewayResendsWhenRecipientAcknowledgementIsLost`).
+Closing it needs recipient-side idempotency on the span identity.
+`TestSelectedTraceDuplicateIsDroppedAcrossRestart` and
+`TestSelectedTraceRefusedByAFullQueueIsNotRemembered` hold the behaviour above.
 
 ## Endpoints and validation
 
@@ -245,7 +310,8 @@ OTELBOX_SELECTED_TRACES_PROTOCOL_HEADER_VALUE=4 \
   otelcol-otelbox validate --config config/gateway.yaml
 ```
 
-Monitor send/enqueue failures and queue size/capacity per exporter and signal.
+Monitor send/enqueue failures and queue size/capacity per exporter and signal,
+and the deduplication index file against its cap.
 Require an unauthenticated OTLP/HTTP probe to return 401 and send far-end markers
 to every eligible recipient; `/status` proves neither access control nor
 delivery.
