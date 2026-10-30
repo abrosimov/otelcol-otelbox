@@ -42,6 +42,16 @@
       datasourceTemplate: 'go',
     },
     {
+      description: 'OCB manifest pin of the local span_dedup processor, resolved through `path:` like the wrappers. It tracks the v0 storage API module it builds against',
+      customType: 'regex',
+      managerFilePatterns: ['/^builder\\.yaml$/'],
+      matchStrings: [
+        '- gomod: github\\.com/abrosimov/otelcol-otelbox/processor/spandedup (?<currentValue>v\\S+)',
+      ],
+      depNameTemplate: 'go.opentelemetry.io/collector/extension/xextension',
+      datasourceTemplate: 'go',
+    },
+    {
       description: 'Collector release the gRPC wrapper adapts',
       customType: 'regex',
       managerFilePatterns: ['/^internal/exporters/otlpauthretry/UPSTREAM_VERSION$/'],

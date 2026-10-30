@@ -185,6 +185,7 @@ service:
     - file_storage/metrics
     - file_storage/traces
     - file_storage/selected_traces
+    - file_storage/selected_traces_dedup
     - file_storage/coupling_stalled_logs
     - file_storage/coupling_stalled_metrics
     - file_storage/coupling_stalled_traces

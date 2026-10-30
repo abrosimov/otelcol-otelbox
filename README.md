@@ -42,6 +42,7 @@ location are supplied through `${env:...}` references.
 | `builder.yaml` | Component manifest. `dist.version` is the artefact version; all `gomod` pins identify the upstream Collector version. |
 | `config/{edge,gateway,host-agent}.yaml` | The three complete role profiles. |
 | `internal/exporters/` | Thin OTLP exporter wrappers that retain auth failures and retry after a long interval, and retry server errors on the ordinary backoff. |
+| `internal/processors/spandedup/` | The `span_dedup` processor that removes re-sent selected-trace spans before their recipient. |
 | `tools/ci/` | Tested Go contract checks for shared profile regions and built-binary contents. |
 | `test/harness/` | Black-box delivery, durability and queue-pressure tests against the built binary. |
 | `test/config/` | CI-only overlays and backend doubles used by the harness. |

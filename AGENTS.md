@@ -38,6 +38,7 @@ module that drives the built binary from outside.
 | `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Carries no `replaces` block. |
 | `renovate.json5` | Extends the fleet preset. Dependency policy lives there, not here. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
+| `internal/processors/spandedup/` | The `span_dedup` processor and unit tests: drops a selected-trace span the exporter queue already accepted, with its index in a storage extension. Its `go.mod` joins the dependency set `manifest resolve` checks. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `docs/` | The documentation vault, laid out under the kadmos template and selected by the root `.vault-root`. `docs/PROJECT_AGENTS.md` states its placement rules. `reference/` holds the role, redaction and adoption notes, edited in place with the profiles; `reference/redaction.md` is the canonical redaction carrier and threat boundary. `roadmaps/` holds the roadmap and deferred tasks. |
 | `tools/ci/` | Tested Go checks for manifest resolution, shared regions, built-binary contents and OCI runtime readiness. |
@@ -195,7 +196,11 @@ until the deployment's queue alert fires. Other permanent errors, such as HTTP
 
 Delivery is at least once. If a recipient accepts a request but its success
 response is lost, retry can duplicate it; exactly-once delivery requires a
-recipient-side idempotency contract that this transport does not own.
+recipient-side idempotency contract that this transport does not own. The
+gateway's `span_dedup/selected_traces` removes replays and upstream re-sends
+before the selected-traces queue, never that queue's own resend. Its
+invariant is that a span is remembered only after the next consumer accepted
+it; `TestSelectedTraceRefusedByAFullQueueIsNotRemembered` guards it.
 
 ## Redaction boundary
 
@@ -317,7 +322,8 @@ is unchanged. Do not raise a dependency by hand ahead of it, and do not add a
 local override or a human gate in front of a check that already has a verdict.
 
 This repository declares its direct dependencies: the `require` blocks of
-`internal/exporters/*/go.mod` and the `gomod` pins above. Raise a version there
+`internal/exporters/*/go.mod` and `internal/processors/spandedup/go.mod`, and
+the `gomod` pins above. Raise a version there
 and the generated module follows, because selection takes the maximum across the
 graph. A transitive dependency of an upstream component is not this repository's
 to pin. `replace` is forbidden — a version-form replacement overrides minimal

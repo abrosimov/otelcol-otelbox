@@ -104,6 +104,21 @@ extensions:
       directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/selected_traces
       cleanup_on_start: true
 
+  # The span_dedup index, apart from the WAL so neither budget hides the other.
+  # The default entry cap persists about 12 MiB of keys; the rest is headroom
+  # for bbolt pages freed by rewriting the open segment. A full file fails each
+  # selected-trace request after enqueue, so producers retry; alert on it.
+  file_storage/selected_traces_dedup:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/selected_traces_dedup
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_SELECTED_TRACES_DEDUP_STORAGE_MAX_SIZE_BYTES:-268435456}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/selected_traces_dedup
+      cleanup_on_start: true
+
 receivers:
   # The loopback default prevents an omitted bind variable from turning `:port`
   # into a wildcard listener. A public ingress must opt into its bind address.
@@ -209,6 +224,19 @@ processors:
     error_mode: propagate
     trace_conditions:
       - 'resource.attributes["otelbox.telemetry.class"] != "llm"'
+
+  # The selected-traces recipient keeps every copy of a span it is sent, so a
+  # producer replay or an edge re-send would become a second row. This drops a
+  # span whose (trace_id, span_id) the exporter queue already accepted. A span
+  # is remembered only after that acceptance, so a refused attempt's retry
+  # always passes. Retention covers a replay hours later and a workstation
+  # offline over a weekend; at the entry cap the oldest go first, so the cap is
+  # also the heap ceiling (about 80 B per entry, 40 MiB at the default).
+  # docs/reference/gateway.md states the duplicate window this cannot close.
+  span_dedup/selected_traces:
+    storage: file_storage/selected_traces_dedup
+    ttl: ${env:OTELBOX_SELECTED_TRACES_DEDUP_TTL:-72h}
+    max_entries: ${env:OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES:-500000}
 
 exporters:
   # These three exporters are one logical all-signal recipient. A deployment
@@ -360,6 +388,7 @@ service:
     - file_storage/metrics
     - file_storage/traces
     - file_storage/selected_traces
+    - file_storage/selected_traces_dedup
   telemetry:
     # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
     # No `output_paths`: a second writer on the same inode interleaves lines and
@@ -390,10 +419,11 @@ service:
       exporters: [otlp_grpc/traces]
     # Only explicitly classified traces enter the additional HTTP WAL. A mixed
     # OTLP request is acknowledged only after both required pipeline paths have
-    # persisted their eligible records.
+    # persisted their eligible records. Deduplication follows the filter so only
+    # selected spans enter its index.
     traces/selected:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, filter/selected_traces]
+      processors: [memory_limiter, redaction/secrets, filter/selected_traces, span_dedup/selected_traces]
       exporters: [otlp_http/selected_traces]
     metrics:
       receivers: [otlp]

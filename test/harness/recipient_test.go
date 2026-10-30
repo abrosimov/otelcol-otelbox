@@ -3,6 +3,7 @@ package harness
 import (
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,7 +97,13 @@ func (s *recipientScenario) dumpOnFailure(t *testing.T, collectors ...*collector
 func (s *recipientScenario) postSelected(t *testing.T, marker string) {
 	t.Helper()
 
-	status, body, err := postTraces(sendClient, gatewayHTTPPort, s.token, tracePayload(t, marker, true))
+	s.postSelectedPayload(t, tracePayload(t, marker, true))
+}
+
+func (s *recipientScenario) postSelectedPayload(t *testing.T, payload []byte) {
+	t.Helper()
+
+	status, body, err := postTraces(sendClient, gatewayHTTPPort, s.token, payload)
 	if err != nil {
 		t.Fatalf("the gateway did not answer the selected trace: %v", err)
 	}
@@ -208,5 +215,102 @@ func TestRecipientPartialSuccessCountsAsDelivered(t *testing.T) {
 	}
 	if exporterMetricPositive(gatewayMetricsPort, "otelcol_exporter_send_failed_spans", "otlp_http/selected_traces") {
 		t.Fatalf("a partial success is now counted as a failed send; PC-08 and the failure matrix must be updated")
+	}
+}
+
+// Longer than any ordinary retry the profiles allow: the first waits the 5s
+// initial interval with the default 0.5 jitter, so at most 7.5s. A resend
+// sooner than this is the backoff ignoring the recipient's Retry-After.
+const recipientRetryAfter = 15 * time.Second
+
+// TestRecipientRetryAfterIsHonoured pins what the pinned otlphttp exporter and
+// the outer retry sender already do: HTTP 429 and 503 with Retry-After are a
+// throttled retry, resent no sooner than the delay, delivered after it and
+// neither counted as failed nor dropped. Every attempt, retries included,
+// must carry the configured protocol header.
+func TestRecipientRetryAfterIsHonoured(t *testing.T) {
+	scenario := startRecipientScenario(t, "gateway-recipient-retry-after", nil)
+	defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
+
+	throttles := []int{http.StatusTooManyRequests, http.StatusServiceUnavailable}
+	retryAfter := strconv.Itoa(int(recipientRetryAfter / time.Second))
+	var attempts atomic.Int32
+	scenario.backend.setReply(func([]byte) backendReply {
+		attempt := int(attempts.Add(1))
+		if attempt > len(throttles) {
+			return backendReply{status: http.StatusOK}
+		}
+		return backendReply{status: throttles[attempt-1], retryAfter: retryAfter}
+	})
+
+	marker := "otelbox-ci-recipient-retry-after-" + randomHex(t, 8)
+	scenario.postSelected(t, marker)
+	if err := poll(deliveryTimeout, scenario.gateway, "the gateway to deliver "+marker+" after two throttled answers", func() bool {
+		return scenario.backend.count(marker) > len(throttles)
+	}); err != nil {
+		t.Fatalf("the recipient throttled the admitted trace twice and the gateway never delivered it: %v", err)
+	}
+
+	arrivals := scenario.backend.arrivalsOf(marker)
+	for i, status := range throttles {
+		if gap := arrivals[i+1].Sub(arrivals[i]); gap < recipientRetryAfter {
+			t.Errorf("the gateway resent %s %s after HTTP %d with Retry-After: %s", marker, gap.Round(time.Millisecond), status, retryAfter)
+		}
+	}
+	if exporterMetricPositive(gatewayMetricsPort, "otelcol_exporter_send_failed_spans", "otlp_http/selected_traces") {
+		t.Errorf("a throttled and later delivered trace was counted as a failed send")
+	}
+	if line := scenario.gateway.firstLogLine("Dropping data"); line != "" {
+		t.Errorf("the gateway dropped data after a throttled answer: %s", line)
+	}
+	headers := scenario.backend.protocolHeadersSeen()
+	for i, value := range headers {
+		if value != scenario.backend.contract.protocolValue {
+			t.Errorf("request %d of %d reached the recipient with %s=%q, want %q",
+				i+1, len(headers), selectedTraceProtocolHeader, value, scenario.backend.contract.protocolValue)
+		}
+	}
+}
+
+// TestRecipientRetryAfterWaitSurvivesARestart stops the gateway gracefully
+// while its exporter waits out a Retry-After far longer than the test. The
+// retry sender aborts the wait with a shutdown error, which keeps the item in
+// the WAL, and the restarted gateway sends it again at once: the remaining
+// delay is not persisted.
+func TestRecipientRetryAfterWaitSurvivesARestart(t *testing.T) {
+	scenario := startRecipientScenario(t, "gateway-before-retry-after-restart", nil)
+	collectors := []*collector{scenario.gateway}
+	defer func() { scenario.dumpOnFailure(t, collectors...) }()
+
+	scenario.backend.setReply(func([]byte) backendReply {
+		return backendReply{status: http.StatusServiceUnavailable, retryAfter: "3600"}
+	})
+	marker := "otelbox-ci-retry-after-restart-" + randomHex(t, 8)
+	scenario.postSelected(t, marker)
+	if err := poll(deliveryTimeout, scenario.gateway, "the recipient to receive "+marker, func() bool {
+		return scenario.backend.count(marker) >= 1
+	}); err != nil {
+		t.Fatalf("the recipient never received the admitted trace: %v", err)
+	}
+	if err := staysFalse(recipientRetryWindow, scenario.gateway, "a resend of "+marker+" inside its Retry-After", func() bool {
+		return scenario.backend.count(marker) >= 2
+	}); err != nil {
+		t.Fatalf("the gateway ignored Retry-After: 3600: %v", err)
+	}
+
+	stopping := time.Now()
+	scenario.gateway.stop(t)
+	if elapsed := time.Since(stopping); elapsed >= stopTimeout {
+		t.Fatalf("the gateway needed %s and SIGKILL to stop during a Retry-After wait; a graceful stop must abort the wait", elapsed.Round(time.Second))
+	}
+	// Upstream logs "Dropping data" for the interrupted wait although the WAL
+	// keeps the item, so delivery after the restart is the only evidence.
+	scenario.backend.setReply(nil)
+	restarted := scenario.start(t, "gateway-after-retry-after-restart")
+	collectors = append(collectors, restarted)
+	if err := poll(deliveryTimeout, restarted, "the restarted gateway to deliver "+marker, func() bool {
+		return scenario.backend.count(marker) >= 2
+	}); err != nil {
+		t.Fatalf("the trace waiting out Retry-After did not survive a gateway restart: %v", err)
 	}
 }

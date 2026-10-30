@@ -83,11 +83,11 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, redaction/secrets]
       exporters: [file/sink]
-    # Inherited unchanged: the selected-traces HTTP exporter and its persistent
-    # queue are part of the contract this overlay is used to prove.
+    # Inherited unchanged: the selected-traces HTTP exporter, its persistent
+    # queue and deduplication are part of the contract this overlay proves.
     traces/selected:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets, filter/selected_traces]
+      processors: [memory_limiter, redaction/secrets, filter/selected_traces, span_dedup/selected_traces]
       exporters: [otlp_http/selected_traces]
     metrics:
       receivers: [otlp]

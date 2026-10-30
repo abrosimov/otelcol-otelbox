@@ -31,6 +31,7 @@ on:
       - .dockerignore
       - config/**
       - internal/exporters/**
+      - internal/processors/**
       - test/**
       - Formula/**
       - renovate.json5
@@ -43,6 +44,7 @@ on:
       - .dockerignore
       - config/**
       - internal/exporters/**
+      - internal/processors/**
       - test/**
       - Formula/**
       - renovate.json5
@@ -91,7 +93,8 @@ jobs:
             --adaptation-version ../../internal/exporters/otlpauthretry/UPSTREAM_VERSION \
             --adaptation-version ../../internal/exporters/otlphttpauthretry/UPSTREAM_VERSION \
             --adaptation-module ../../internal/exporters/otlpauthretry/go.mod \
-            --adaptation-module ../../internal/exporters/otlphttpauthretry/go.mod)"
+            --adaptation-module ../../internal/exporters/otlphttpauthretry/go.mod \
+            --adaptation-module ../../internal/processors/spandedup/go.mod)"
           printf '%s\n' "$manifest_resolution" >> "$GITHUB_OUTPUT"
           version="$(printf '%s\n' "$manifest_resolution" | awk -F= '$1 == "version" { print $2 }')"
           upstream_pin="$(printf '%s\n' "$manifest_resolution" | awk -F= '$1 == "upstream_pin" { print $2 }')"
@@ -219,9 +222,9 @@ jobs:
           fi
           go vet ./...
 
-      - name: Check the local exporter adaptations
+      - name: Check the local exporter adaptations and processor
         run: |
-          for module in internal/exporters/otlpauthretry internal/exporters/otlphttpauthretry; do
+          for module in internal/exporters/otlpauthretry internal/exporters/otlphttpauthretry internal/processors/spandedup; do
             unformatted="$(gofmt -l "$module")"
             if [ -n "$unformatted" ]; then
               echo "Go files need gofmt:" >&2

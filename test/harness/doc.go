@@ -116,6 +116,20 @@
 // retried. That describes current behaviour, not the desired contract; the
 // audit in docs/research records the open question.
 //
+// TestRecipientRetryAfterIsHonoured answers one record with HTTP 429 and then
+// 503, each with Retry-After, and requires each resend no sooner than the
+// delay, delivery after it, no failed send and the configured protocol header
+// on every attempt. TestRecipientRetryAfterWaitSurvivesARestart stops the
+// gateway gracefully during an hour-long Retry-After and requires the
+// restarted gateway to deliver the record.
+//
+// TestSelectedTraceDuplicateIsDroppedAcrossRestart replays a delivered
+// classified span, same trace and span ID, to the running gateway and to one
+// restarted after SIGKILL: span_dedup must count both replays and the
+// selected-traces recipient must not receive either.
+// TestSelectedTraceRefusedByAFullQueueIsNotRemembered is its safety guard: a
+// span refused by a full queue must be admitted and delivered on retry.
+//
 // TestGatewayMixedTraceRequestIsOneAcknowledgementUnit fills the
 // selected-traces queue while its recipient holds every answer, then sends one
 // request carrying a classified and an unclassified resource: it must not be

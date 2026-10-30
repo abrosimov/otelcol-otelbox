@@ -58,8 +58,12 @@ type selectedTraceBackend struct {
 
 	mu       sync.Mutex
 	bodies   [][]byte
-	failures []string
-	serveErr error
+	arrivals []time.Time
+	// The protocol header of every request, recorded before any check rejects
+	// it, so a retry that lost the header is visible rather than just refused.
+	protocolHeaders []string
+	failures        []string
+	serveErr        error
 	// reply, when set, decides the answer to each accepted request after its
 	// body is recorded. Nil answers 200 with an empty body.
 	reply func(body []byte) backendReply
@@ -70,9 +74,10 @@ type selectedTraceBackend struct {
 // the gateway after the recipient has the data but before its exporter sees
 // the acknowledgement.
 type backendReply struct {
-	status int
-	body   []byte
-	hold   <-chan struct{}
+	status     int
+	body       []byte
+	hold       <-chan struct{}
+	retryAfter string
 }
 
 func (b *selectedTraceBackend) setReply(reply func(body []byte) backendReply) {
@@ -117,6 +122,11 @@ func startSelectedTraceBackend(t *testing.T, contract selectedTraceContract) *se
 }
 
 func (b *selectedTraceBackend) receive(response http.ResponseWriter, request *http.Request) {
+	arrived := time.Now()
+	b.mu.Lock()
+	b.protocolHeaders = append(b.protocolHeaders, request.Header.Get(selectedTraceProtocolHeader))
+	b.mu.Unlock()
+
 	if request.Method != http.MethodPost {
 		b.reject(response, fmt.Sprintf("method %s", request.Method), http.StatusMethodNotAllowed)
 		return
@@ -158,6 +168,7 @@ func (b *selectedTraceBackend) receive(response http.ResponseWriter, request *ht
 
 	b.mu.Lock()
 	b.bodies = append(b.bodies, body)
+	b.arrivals = append(b.arrivals, arrived)
 	reply := b.reply
 	b.mu.Unlock()
 
@@ -173,6 +184,9 @@ func (b *selectedTraceBackend) receive(response http.ResponseWriter, request *ht
 		}
 	}
 	response.Header().Set("Content-Type", "application/x-protobuf")
+	if answer.retryAfter != "" {
+		response.Header().Set("Retry-After", answer.retryAfter)
+	}
 	response.WriteHeader(answer.status)
 	_, _ = response.Write(answer.body)
 }
@@ -208,6 +222,27 @@ func (b *selectedTraceBackend) count(marker string) int {
 		}
 	}
 	return n
+}
+
+// arrivalsOf reports when each request that carried marker arrived, in order.
+func (b *selectedTraceBackend) arrivalsOf(marker string) []time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var arrivals []time.Time
+	for i, body := range b.bodies {
+		if strings.Contains(string(body), marker) {
+			arrivals = append(arrivals, b.arrivals[i])
+		}
+	}
+	return arrivals
+}
+
+func (b *selectedTraceBackend) protocolHeadersSeen() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return append([]string(nil), b.protocolHeaders...)
 }
 
 func (b *selectedTraceBackend) diagnostics() string {

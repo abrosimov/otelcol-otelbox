@@ -49,6 +49,12 @@ processors:
   # routes on the result, so the wrong verb silently reroutes traffic.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.163.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.163.0
+  # Local: drops a selected-trace span whose (trace_id, span_id) the recipient
+  # path already accepted, because that recipient stores every copy. Its index
+  # lives in a storage extension. Pinned at the Collector release it builds
+  # against, like the wrappers below.
+  - gomod: github.com/abrosimov/otelcol-otelbox/processor/spandedup v0.163.0
+    path: ./internal/processors/spandedup
 
 exporters:
   # Thin wrappers put the persistent queue around standard upstream exporters,
@@ -72,5 +78,5 @@ extensions:
 # No `replaces` block. A version-form `replace` overrides minimal version
 # selection in both directions, so it downgrades as readily as it raises. A
 # version this repository declares belongs in `require` in
-# internal/exporters/*/go.mod, which reaches the generated module through the
-# `path:` entries above.
+# internal/exporters/*/go.mod or internal/processors/spandedup/go.mod, which
+# reach the generated module through the `path:` entries above.

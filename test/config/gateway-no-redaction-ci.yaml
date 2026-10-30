@@ -16,7 +16,7 @@ service:
       exporters: [file/sink]
     traces/selected:
       receivers: [otlp]
-      processors: [memory_limiter, filter/selected_traces]
+      processors: [memory_limiter, filter/selected_traces, span_dedup/selected_traces]
       exporters: [otlp_http/selected_traces]
     metrics:
       receivers: [otlp]

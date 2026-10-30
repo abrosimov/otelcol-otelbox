@@ -41,10 +41,17 @@ ProblemCard in its thin form, with the evidence that currently supports it.
 | Dispatched items are re-enqueued at restart. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:151-160`, `:448-499` | supported by inspected source |
 | No delivery ordering is guaranteed after restart. | `go.opentelemetry.io/collector/exporter/exporterhelper@v0.162.0/internal/queue/persistent_queue.go:448-499` | supported by inspected source |
 | A record the recipient received before the gateway died, without seeing the answer, is sent again by the restarted gateway. | `TestGatewayResendsWhenRecipientAcknowledgementIsLost` | proven by test |
+| On the selected-traces path, a span whose trace and span ID the exporter queue already accepted is dropped when a producer replays it or an edge re-sends it, also after a gateway SIGKILL and restart. | `TestSelectedTraceDuplicateIsDroppedAcrossRestart`; `internal/processors/spandedup` unit tests | proven by test |
+| Deduplication cannot lose a span: a span is remembered only after the exporter queue accepted it, so the retry of a refused attempt is admitted and delivered. | `TestSelectedTraceRefusedByAFullQueueIsNotRemembered`; `TestSpanIsNotRecordedWhenTheNextConsumerRefusesIt` | proven by test |
+| Deduplication runs before the exporter queue, so it cannot close the lost-ACK window above: the gateway's own resend from its WAL still reaches the recipient twice. | `config/gateway.yaml` `traces/selected` processor order; `TestGatewayResendsWhenRecipientAcknowledgementIsLost` passes with deduplication wired | proven by test |
+| Retry-After on HTTP 429 and 503 delays the resend by at least the stated time without dropping or failing the record; a restart during the wait keeps the record and resends it at once, because the remaining delay is not persisted. | `go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.162.0/otlp.go:239-257`, `exporterhelper@v0.162.0/internal/retry_sender.go:111-150`; `TestRecipientRetryAfterIsHonoured`, `TestRecipientRetryAfterWaitSurvivesARestart` | proven by test |
 
 ### Interpretation
 
 Recipients must deduplicate by a producer-supplied identity, such as span ID or a log record attribute.
+For the selected-traces recipient, whose backend keeps every copy, the gateway
+now removes producer replays and upstream re-sends itself; the lost-ACK resend
+from its own queue remains the recipient's to absorb.
 
 ## Sources And Limits
 
