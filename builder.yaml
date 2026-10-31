@@ -11,7 +11,7 @@ dist:
     host-agent roles.
   output_path: ./_build
   # Unquoted: the Go manifest resolver requires one stable semantic version.
-  version: 2.5.0
+  version: 2.6.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.163.0
@@ -48,6 +48,21 @@ processors:
   # make the statement; `insert` defers to it. Choose deliberately — the gateway
   # routes on the result, so the wrong verb silently reroutes traffic.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.163.0
+  # The `resource` processor above reaches resource attributes only. A backend
+  # may read a field from SPAN attributes and nowhere else — Langfuse reads a
+  # trace's user and tags exactly that way — and nothing else linked here can
+  # write one. This is the smallest component that can, and the edge role wires
+  # it for that single purpose.
+  #
+  # Same placement rule as `resource/<name>`: BEFORE `redaction/secrets`, so an
+  # attribute it adds is scanned by the same patterns as an ingested one. Its
+  # OTTL `set` overwrites unconditionally, so wire an instance only on a pipeline
+  # whose producers are known not to set the field themselves.
+  #
+  # Keep values that reach an attribute scalar. `Split` and `append` would build
+  # a slice, which `redaction/secrets` does not inspect under
+  # `redact_all_types: false` — that would be an injected value exempt from the
+  # control every other one passes.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.163.0
   # Local: drops a selected-trace span whose (trace_id, span_id) the recipient
   # path already accepted, because that recipient stores every copy. Its index

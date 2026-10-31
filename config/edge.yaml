@@ -163,6 +163,32 @@ processors:
     timeout: 2s
     override: false
 
+  # Langfuse resolves a trace's user and tags from SPAN attributes only; its
+  # ingestion path never falls back to resource attributes for those two, so
+  # `resource_detection` above cannot supply them. A producer speaking plain
+  # OpenTelemetry sets neither, which is the gap this closes: without it the
+  # trace is untagged and inherits whatever random `user.id` the producer
+  # invented for itself.
+  #
+  # Wired on the native `traces` pipeline and nowhere else. `set` overwrites, so
+  # a pipeline fed by a Langfuse SDK — which states both fields itself, tags
+  # included — must not carry this instance.
+  #
+  # `langfuse.trace.tags` is a comma-separated STRING rather than an OTLP array.
+  # Langfuse accepts an array, a JSON-array string or a comma-separated string;
+  # the string is the only form `redaction/secrets` can see, because a slice is
+  # an uninspected carrier under `redact_all_types: false`. An array here would
+  # be the one attribute on the record exempt from the control every other one
+  # passes, which is also why this sits before redaction rather than after it.
+  #
+  # `error_mode` restated rather than defaulted: `propagate` would return the
+  # error to the receiver, so a failed stamp would reject an accepted span.
+  transform/langfuse_native:
+    error_mode: ignore
+    trace_statements:
+      - 'set(span.attributes["langfuse.user.id"], "${env:OTELBOX_LANGFUSE_USER_ID:-unknown}")'
+      - 'set(span.attributes["langfuse.trace.tags"], "${env:OTELBOX_LANGFUSE_NATIVE_TAGS:-otel-native}")'
+
   # A fixed ceiling is meaningful for a workstation process; a percentage of
   # host RAM is not. The limiter observes Go heap, not RSS or mapped WAL pages.
   memory_limiter:
@@ -352,10 +378,12 @@ service:
   pipelines:
     # Same shape in all signals: detection must precede redaction so what it
     # adds is subject to the same patterns, and redaction must be the last thing
-    # that can alter an attribute.
+    # that can alter an attribute. `transform/langfuse_native` is the one
+    # departure from that shape, and only `traces` takes it: the other signals
+    # carry no Langfuse trace-level fields to stamp.
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource_detection, redaction/secrets]
+      processors: [memory_limiter, resource_detection, transform/langfuse_native, redaction/secrets]
       exporters: [otlp_grpc/gateway]
     metrics:
       receivers: [otlp]

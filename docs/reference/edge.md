@@ -40,6 +40,8 @@ Reference variables have safe absent-variable defaults:
 | `OTELBOX_UPSTREAM_TLS_KEY_FILE` | none | Private key for the certificate above. Supply both or neither. |
 | `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` | `1h` | How stale the client pair may be before the next handshake re-reads it. |
 | `OTELBOX_UPSTREAM_COMPRESSION` | `zstd` | Wire codec for the gateway leg. `zstd`, `gzip` and `none` are exercised; see below. |
+| `OTELBOX_LANGFUSE_USER_ID` | `unknown` | Identity stamped on every native trace; see below. |
+| `OTELBOX_LANGFUSE_NATIVE_TAGS` | `otel-native` | Comma-separated tags stamped on every native trace; see below. |
 
 If `OTELBOX_STORAGE_DIR` is absent, its invalid `/dev/null/...-is-required`
 sentinel makes validation fail before a root-level WAL can be selected. An
@@ -146,6 +148,39 @@ The codec changes neither sizing invariant. `sizer: bytes` measures uncompressed
 queue items, and the gateway's `max_recv_msg_size_mib` applies to the
 decompressed message, so the 1.5 MiB sender batch stays inside the 2 MiB receive
 envelope regardless.
+
+## Langfuse trace-level fields on native traces
+
+`transform/langfuse_native` stamps two span attributes on the `traces` pipeline:
+
+| Attribute | Value |
+| --- | --- |
+| `langfuse.user.id` | `${OTELBOX_LANGFUSE_USER_ID:-unknown}` |
+| `langfuse.trace.tags` | `${OTELBOX_LANGFUSE_NATIVE_TAGS:-otel-native}` |
+
+Langfuse resolves a trace's user and tags from span attributes only; resource
+attributes are not consulted for either, so `resource_detection` and a rendered
+`resource/<name>` instance cannot supply them. A producer speaking plain
+OpenTelemetry sets neither, and its own `user.id` is frequently a per-installation
+identifier rather than a person, so those traces arrive untagged and under an
+identity nothing else shares.
+
+The tags value is a comma-separated string, not an OTLP array. Langfuse accepts
+an array, a JSON-array string and a comma-separated string, and the string is the
+only form `redaction/secrets` inspects: a slice attribute is an uncovered carrier
+under `redact_all_types: false`. That is also why the processor sits between
+`resource_detection` and `redaction/secrets` — what it injects passes the same
+deny-list as an ingested attribute.
+
+Both statements use OTTL `set`, which overwrites. A deployment that adds a
+listener fed by a Langfuse SDK gives it its own pipeline and does **not** put this
+processor on it: the SDK states both fields itself, per-observation tags included,
+and `set` would discard them. `metrics`, `logs` and `metrics/self` carry no
+Langfuse trace-level fields and are untouched.
+
+`error_mode: ignore` is deliberate. A failed stamp is logged and the span
+continues; `propagate` would return the error to the receiver and reject data
+this role exists to retain.
 
 ## Durability
 

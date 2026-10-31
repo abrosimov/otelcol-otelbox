@@ -26,6 +26,8 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		"bookmark_service_latency",
 		"api_gateway_handler_v3",
 	}
+	langfuseUserID := "otelbox-ci-user-" + randomHex(t, 8)
+	langfuseTags := "otelbox-ci-tag-" + randomHex(t, 8) + ",otelbox-ci-tag-" + randomHex(t, 8)
 	happyMarker := "otelbox-ci-happy-" + randomHex(t, 8)
 	redactionMarker := "otelbox-ci-redaction-" + randomHex(t, 8)
 	unauthorisedMarker := "otelbox-ci-unauthorised-" + randomHex(t, 8)
@@ -81,6 +83,10 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 				// The trust anchor for the leg the role profile keeps at
 				// `insecure: false`.
 				"OTELBOX_CI_EDGE_CA_FILE": chain.caFile,
+				// Rendered rather than left on their reference defaults, so
+				// assertion 3 can attribute what it finds to these references.
+				"OTELBOX_LANGFUSE_USER_ID":     langfuseUserID,
+				"OTELBOX_LANGFUSE_NATIVE_TAGS": langfuseTags,
 			},
 			configs: []string{
 				configPath("config", "edge.yaml"),
@@ -236,6 +242,20 @@ func TestEdgeToGatewayDelivery(t *testing.T) {
 		}
 		if !selectedBackend.contains("redaction.masked.count") {
 			t.Error("the selected trace has no redaction.masked.count evidence")
+		}
+
+		// transform/langfuse_native runs under `error_mode: ignore`, so a
+		// statement that stopped parsing or running would be logged and the span
+		// would arrive looking exactly as it does now. Delivery alone proves
+		// nothing about it; these values do.
+		if !sinkContains(t, sink, langfuseUserID) {
+			t.Errorf("no delivered trace carries langfuse.user.id %q", langfuseUserID)
+		}
+		// The encoding is the assertion. A slice-valued tag list would reach the
+		// recipient equally well and be invisible to redaction/secrets, which
+		// does not inspect slices under `redact_all_types: false`.
+		if !sinkContains(t, sink, `"stringValue":"`+langfuseTags+`"`) {
+			t.Errorf("no delivered trace carries langfuse.trace.tags %q as a string value", langfuseTags)
 		}
 	})
 
