@@ -19,7 +19,7 @@
 // touching the manifest. Both halves then fail the same check.
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  extends: ['github>abrosimov/renovate-config#v3.2.0'],
+  extends: ['github>abrosimov/renovate-config#v3.4.0'],
 
   customManagers: [
     {
