@@ -18,13 +18,13 @@ class OtelcolOtelbox < Formula
   # The tag is spelled out rather than derived from `version`: the URL must
   # precede the version line, so there is nothing to read yet, and every other
   # way of deriving it costs a `brew style` offence.
-  url "https://github.com/abrosimov/otelcol-otelbox/archive/refs/tags/v2.6.0.tar.gz"
+  url "https://github.com/abrosimov/otelcol-otelbox/releases/download/v2.5.0/otelcol-otelbox_darwin_arm64"
   # Mirrors dist.version in builder.yaml, the single source of truth. It says
   # nothing about the upstream collector inside; that lives in the gomod pins.
   version "2.5.0"
   # CI writes this after publishing: a checksum cannot exist before the bytes it
   # describes. Hand-editing it only makes it stale.
-  sha256 "492adbaeaa810ac75d8f92aede4aa374bba40e88c94cc6aaee41b19686a69ad0"
+  sha256 "e52f0ae1b932ed5edbe4f89975b708f08c78d5cbc25867efa2f27174738412fa"
 
   # The release ships one binary per target and this formula wants the macOS
   # one, so the platform is a hard requirement rather than a conditional `url`.

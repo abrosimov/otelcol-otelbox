@@ -16,6 +16,13 @@ var (
 	pseudoVersionTag = regexp.MustCompile(`^-0\.[0-9]{14}-[0-9a-f]{12}$`)
 )
 
+const contribModulePrefix = "github.com/open-telemetry/opentelemetry-collector-contrib/"
+
+type componentPin struct {
+	module  string
+	version string
+}
+
 type ManifestResolution struct {
 	Version         string
 	UpstreamPin     string
@@ -27,7 +34,7 @@ func ResolveManifest(input io.Reader) (ManifestResolution, error) {
 	scanner := bufio.NewScanner(input)
 	var versions []string
 	var upstreamPins []string
-	var componentPins []string
+	var componentPins []componentPin
 	var replacements [][]string
 
 	for scanner.Scan() {
@@ -48,7 +55,7 @@ func ResolveManifest(input io.Reader) (ManifestResolution, error) {
 		if len(fields) != 4 || fields[0] != "-" || fields[1] != "gomod:" {
 			continue
 		}
-		componentPins = append(componentPins, fields[3])
+		componentPins = append(componentPins, componentPin{module: fields[2], version: fields[3]})
 		if fields[2] == "go.opentelemetry.io/collector/receiver/otlpreceiver" {
 			upstreamPins = append(upstreamPins, fields[3])
 		}
@@ -69,10 +76,8 @@ func ResolveManifest(input io.Reader) (ManifestResolution, error) {
 	if !strings.HasPrefix(upstreamPin, "v") || !semanticVersion.MatchString(strings.TrimPrefix(upstreamPin, "v")) {
 		return ManifestResolution{}, fmt.Errorf("otlpreceiver pin must be a stable semantic version prefixed with v, got %q", upstreamPin)
 	}
-	for _, pin := range componentPins {
-		if pin != upstreamPin {
-			return ManifestResolution{}, fmt.Errorf("manifest mixes component pins %s and %s", upstreamPin, pin)
-		}
+	if err := checkComponentPins(componentPins, upstreamPin); err != nil {
+		return ManifestResolution{}, err
 	}
 	normalised := make([]string, 0, len(replacements))
 	for _, replacement := range replacements {
@@ -88,6 +93,42 @@ func ResolveManifest(input io.Reader) (ManifestResolution, error) {
 		UpstreamVersion: strings.TrimPrefix(upstreamPin, "v"),
 		Replacements:    normalised,
 	}, nil
+}
+
+// Contrib cuts patch releases, such as v0.164.1, on top of an unchanged core release.
+func checkComponentPins(pins []componentPin, upstreamPin string) error {
+	contribPin := ""
+	for _, pin := range pins {
+		if !strings.HasPrefix(pin.module, contribModulePrefix) {
+			if pin.version != upstreamPin {
+				return fmt.Errorf("manifest mixes component pins %s and %s", upstreamPin, pin.version)
+			}
+			continue
+		}
+		if contribPin == "" {
+			contribPin = pin.version
+		} else if pin.version != contribPin {
+			return fmt.Errorf("manifest mixes contrib pins %s and %s", contribPin, pin.version)
+		}
+	}
+	if contribPin != "" && !onPatchLine(contribPin, upstreamPin) {
+		return fmt.Errorf("contrib pin %s is not a contrib release on the core line of %s", contribPin, upstreamPin)
+	}
+	return nil
+}
+
+func onPatchLine(version, release string) bool {
+	versionParts := semanticVersion.FindStringSubmatch(strings.TrimPrefix(version, "v"))
+	releaseParts := semanticVersion.FindStringSubmatch(strings.TrimPrefix(release, "v"))
+	if !strings.HasPrefix(version, "v") || versionParts == nil || releaseParts == nil {
+		return false
+	}
+	if versionParts[1] != releaseParts[1] || versionParts[2] != releaseParts[2] {
+		return false
+	}
+	versionPatch, versionErr := strconv.Atoi(versionParts[3])
+	releasePatch, releaseErr := strconv.Atoi(releaseParts[3])
+	return versionErr == nil && releaseErr == nil && versionPatch >= releasePatch
 }
 
 // A version-form left side would stop applying silently once MVS selects another version.
