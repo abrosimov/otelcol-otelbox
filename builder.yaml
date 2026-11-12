@@ -90,8 +90,26 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.164.1
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.164.1
 
-# No `replaces` block. A version-form `replace` overrides minimal version
-# selection in both directions, so it downgrades as readily as it raises. A
-# version this repository declares belongs in `require` in
+# One `replace`, and only this one. A version-form `replace` overrides minimal
+# version selection in both directions, so it downgrades as readily as it
+# raises. A version this repository declares belongs in `require` in
 # internal/exporters/*/go.mod or internal/processors/spandedup/go.mod, which
 # reach the generated module through the `path:` entries above.
+#
+# The exception carries a fix for exporterhelper's persistent queue: upstream
+# does not revert the size counters when a put fails and does not release the
+# size of a request it drops on read or re-queue, so during a long backend
+# outage the leaked size fills the capacity check, which then refuses or blocks
+# data the queue has room for. The fork is branch `persistent_queue_size_leak` of
+# github.com/abrosimov/opentelemetry-collector, one commit on the core tag the
+# `gomod` pins name; it keeps upstream's module path.
+#
+# Because it replaces the module path, it pins exporterhelper to that commit
+# whatever version MVS would select. The same line therefore sits in both
+# internal/exporters/*/go.mod, so the wrapper tests run the forked queue, and
+# `manifest resolve` rejects a replacement not based on the upstream pin or
+# missing from a module that requires exporterhelper. Every Collector bump
+# re-bases the branch onto the new tag and moves all three lines together.
+# Remove them once an upstream release contains the fix.
+replaces:
+  - go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112140826-33b610adf7d3

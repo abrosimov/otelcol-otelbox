@@ -90,3 +90,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
+
+replace go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112140826-33b610adf7d3

@@ -35,12 +35,74 @@ func TestResolveManifestRejectsInvalidContracts(t *testing.T) {
 		{name: "missing receiver", manifest: "dist:\n  version: 2.1.0\n"},
 		{name: "invalid upstream", manifest: "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver latest\n"},
 		{name: "mixed pins", manifest: "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0\nexporters:\n  - gomod: example/exporter v0.157.0\n"},
+		{name: "replacement based on an older release", manifest: manifestWithReplacement("go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.157.1-0.20261112140826-33b610adf7d3")},
+		{name: "replacement based on no release", manifest: manifestWithReplacement("go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.0.0-20261112140826-33b610adf7d3")},
+		{name: "replacement of one version", manifest: manifestWithReplacement("go.opentelemetry.io/collector/exporter/exporterhelper v0.158.0 => example.com/fork/exporterhelper v0.158.1-0.20261112140826-33b610adf7d3")},
+		{name: "directory replacement", manifest: manifestWithReplacement("go.opentelemetry.io/collector/exporter/exporterhelper => ../exporterhelper")},
+		{name: "replacement outside the Collector core", manifest: manifestWithReplacement("example.com/other => example.com/fork/other v0.158.1-0.20261112140826-33b610adf7d3")},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := ResolveManifest(strings.NewReader(test.manifest)); err == nil {
 				t.Fatal("ResolveManifest() error = nil, want an error")
+			}
+		})
+	}
+}
+
+const forkReplacement = "go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.158.1-0.20261112140826-33b610adf7d3"
+
+func manifestWithReplacement(replacement string) string {
+	return "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0\nreplaces:\n  - " + replacement + "\n"
+}
+
+func TestResolveManifestAcceptsReplacementsBasedOnTheUpstreamPin(t *testing.T) {
+	for _, replacement := range []string{
+		forkReplacement,
+		"go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.158.0",
+	} {
+		resolution, err := ResolveManifest(strings.NewReader(manifestWithReplacement(replacement)))
+		requireNoError(t, err)
+		if len(resolution.Replacements) != 1 || resolution.Replacements[0] != replacement {
+			t.Fatalf("ResolveManifest() replacements = %q, want [%q]", resolution.Replacements, replacement)
+		}
+	}
+}
+
+func TestCheckAdaptationReplacements(t *testing.T) {
+	directory := t.TempDir()
+	files := map[string]string{
+		"single.mod":    "module example\nrequire go.opentelemetry.io/collector/exporter/exporterhelper v0.158.0\nreplace " + forkReplacement + "\n",
+		"block.mod":     "module example\nrequire (\n\tgo.opentelemetry.io/collector/exporter/exporterhelper v0.158.0\n)\nreplace (\n\t" + forkReplacement + "\n)\n",
+		"unrelated.mod": "module example\nrequire go.opentelemetry.io/collector/component v1.64.0\n",
+		"missing.mod":   "module example\nrequire (\n\tgo.opentelemetry.io/collector/exporter/exporterhelper v0.158.0 // indirect\n)\n",
+		"stale.mod":     "module example\nrequire go.opentelemetry.io/collector/exporter/exporterhelper v0.158.0\nreplace go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.157.1-0.20261001000000-0123456789ab\n",
+	}
+	paths := make(map[string]string, len(files))
+	for name, content := range files {
+		paths[name] = filepath.Join(directory, name)
+		if err := os.WriteFile(paths[name], []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	requireNoError(t, CheckAdaptationReplacements([]string{forkReplacement}, []string{paths["single.mod"], paths["block.mod"], paths["unrelated.mod"]}))
+	requireNoError(t, CheckAdaptationReplacements(nil, []string{paths["unrelated.mod"], paths["missing.mod"]}))
+
+	for _, test := range []struct {
+		name         string
+		replacements []string
+		path         string
+	}{
+		{name: "module requires the replaced module without the replacement", replacements: []string{forkReplacement}, path: paths["missing.mod"]},
+		{name: "module replacement differs from builder.yaml", replacements: []string{forkReplacement}, path: paths["stale.mod"]},
+		{name: "module replacement absent from builder.yaml", path: paths["single.mod"]},
+		{name: "unreadable module", path: filepath.Join(directory, "absent.mod")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := CheckAdaptationReplacements(test.replacements, []string{test.path}); err == nil {
+				t.Fatal("CheckAdaptationReplacements() error = nil, want an error")
 			}
 		})
 	}
@@ -83,6 +145,9 @@ require (
 require (
   go.opentelemetry.io/collector v0.157.0 // indirect
   go.opentelemetry.io/collector/featuregate v1.63.0 // indirect
+)
+replace (
+  go.opentelemetry.io/collector/exporter/exporterhelper => example.com/fork/exporterhelper v0.158.1-0.20261112140826-33b610adf7d3
 )
 `,
 		mixedUpstream: "module example\nrequire go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0\n",

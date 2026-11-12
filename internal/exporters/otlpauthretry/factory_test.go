@@ -1,17 +1,26 @@
 package otlpauthretry
 
 import (
+	"context"
 	"errors"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/exporter/exportertest"
+	upstream "go.opentelemetry.io/collector/exporter/otlpexporter"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
 func TestDefaultConfigUsesCanonicalTypeAndUpstreamDefaults(t *testing.T) {
@@ -132,4 +141,99 @@ func TestClassifyServerError(t *testing.T) {
 	}
 	invalid := consumererror.NewPermanent(status.Error(codes.InvalidArgument, "bad payload"))
 	require.Equal(t, invalid, classifyError(invalid, AuthRetryConfig{}, serverRetry))
+}
+
+func TestClassifyResourceExhausted(t *testing.T) {
+	serverRetry := ServerErrorRetryConfig{Enabled: true}
+
+	overloaded := consumererror.NewPermanent(status.Error(codes.ResourceExhausted, "server is overloaded"))
+	retried := classifyError(overloaded, AuthRetryConfig{}, serverRetry)
+	require.Error(t, retried)
+	require.False(t, consumererror.IsPermanent(retried))
+	require.NotContains(t, retried.Error(), "Throttle")
+	require.Equal(t, overloaded, classifyError(overloaded, AuthRetryConfig{}, ServerErrorRetryConfig{}))
+
+	throttled := exporterhelper.NewThrottleRetry(status.Error(codes.ResourceExhausted, "slow down"), 5*time.Second)
+	require.Equal(t, throttled, classifyError(throttled, AuthRetryConfig{}, serverRetry))
+
+	for _, message := range []string{
+		"grpc: received message larger than max (3145728 vs. 2097152)",
+		"grpc: received message after decompression larger than max 2097152",
+		"grpc: message after decompression larger than max (3145728 vs. 2097152)",
+		"trying to send message larger than max (3145728 vs. 2097152)",
+		"grpc: message too large (3145728 bytes)",
+	} {
+		t.Run(message, func(t *testing.T) {
+			oversized := consumererror.NewPermanent(status.Error(codes.ResourceExhausted, message))
+			require.Equal(t, oversized, classifyError(oversized, AuthRetryConfig{}, serverRetry))
+		})
+	}
+}
+
+type refusingTraceServer struct {
+	ptraceotlp.UnimplementedGRPCServer
+	refusal error
+}
+
+func (server *refusingTraceServer) Export(context.Context, ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
+	return ptraceotlp.NewExportResponse(), server.refusal
+}
+
+func TestClassifyResourceExhaustedReadsTheUpstreamStatus(t *testing.T) {
+	serverRetry := ServerErrorRetryConfig{Enabled: true}
+	tests := []struct {
+		name       string
+		refusal    error
+		maxRecv    int
+		spanName   string
+		retryable  bool
+		wantDetail string
+	}{
+		{
+			name:       "recipient sheds load",
+			refusal:    status.Error(codes.ResourceExhausted, "server is overloaded"),
+			maxRecv:    4 << 20,
+			spanName:   "probe",
+			retryable:  true,
+			wantDetail: "server is overloaded",
+		},
+		{
+			name:       "batch above the recipient's receive limit",
+			maxRecv:    1024,
+			spanName:   strings.Repeat("x", 64<<10),
+			retryable:  false,
+			wantDetail: "larger than max",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			server := grpc.NewServer(grpc.MaxRecvMsgSize(test.maxRecv))
+			ptraceotlp.RegisterGRPCServer(server, &refusingTraceServer{refusal: test.refusal})
+			go func() { _ = server.Serve(listener) }()
+			defer server.Stop()
+
+			config := NewFactory().CreateDefaultConfig().(*Config)
+			config.ClientConfig.Endpoint = listener.Addr().String()
+			config.ClientConfig.TLS.Insecure = true
+			inner, err := upstream.NewFactory().CreateTraces(context.Background(),
+				exportertest.NewNopSettings(upstream.NewFactory().Type()), innerConfig(config))
+			require.NoError(t, err)
+			require.NoError(t, inner.Start(context.Background(), componenttest.NewNopHost()))
+			defer func() { require.NoError(t, inner.Shutdown(context.Background())) }()
+
+			traces := ptrace.NewTraces()
+			traces.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty().SetName(test.spanName)
+			exportErr := inner.ConsumeTraces(context.Background(), traces)
+			require.Error(t, exportErr)
+			require.Equal(t, codes.ResourceExhausted, status.Code(exportErr))
+			require.ErrorContains(t, exportErr, test.wantDetail)
+			require.True(t, consumererror.IsPermanent(exportErr), "upstream must still call ResourceExhausted without RetryInfo permanent")
+
+			classified := classifyError(exportErr, AuthRetryConfig{}, serverRetry)
+			require.Equal(t, test.retryable, !consumererror.IsPermanent(classified))
+			require.Equal(t, exportErr, classifyError(exportErr, AuthRetryConfig{}, ServerErrorRetryConfig{}))
+		})
+	}
 }

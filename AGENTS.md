@@ -35,7 +35,7 @@ module that drives the built binary from outside.
 
 | Path | Purpose |
 | --- | --- |
-| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Carries no `replaces` block. |
+| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Its one `replaces` entry carries a forked exporterhelper fix; its comment states why and when it goes. |
 | `renovate.json5` | Extends the fleet preset. Dependency policy lives there, not here. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
 | `internal/processors/spandedup/` | The `span_dedup` processor and unit tests: drops a selected-trace span the exporter queue already accepted, with its index in a storage extension. Its `go.mod` joins the dependency set `manifest resolve` checks. |
@@ -100,11 +100,17 @@ the referenced component is not wired by the final pipeline.
 
 ## Persistence before acknowledgement
 
-Every network exporter has a bounded `file_storage` sending queue. Edge and
-gateway set `block_on_overflow: true` because their OTLP producers can retry.
-The host agent sets it to `false`: scrapers cannot be back-pressured, so blocking
-would lose subsequent collection cycles while retaining the current item. Its
-WAL protects a bounded outage and the deployment must alert before capacity.
+Every network exporter has a bounded `file_storage` sending queue. The gateway
+sets `block_on_overflow: true`: its producer is an edge or host agent whose own
+WAL keeps retrying. The edge sets it to `false`: blocking held a producer's
+request until the producer's own export timeout cancelled it, and an SDK then
+drops the batch without retrying, whereas an immediate gRPC `Unavailable` /
+HTTP 503 is retried. `TestEdgeRefusesAtFullQueueWithARetryableStatus` guards
+it. The host agent sets it to `false` too: scrapers cannot be back-pressured, so
+blocking would lose subsequent collection cycles while retaining the current
+item. Edge and host-agent WALs protect a bounded outage and the deployment must
+alert before capacity, through an out-of-band watcher because the in-band
+signals queue behind the outage.
 
 Do not put the `batch` processor in a role pipeline. In the pinned upstream, it
 sends into an internal channel and returns success; a later downstream failure
@@ -185,13 +191,16 @@ is read again before a later attempt, so replacing it can drain the queue
 without restarting the Collector.
 
 Every outbound exporter also enables `retry_on_server_error`. The pinned
-exporters call HTTP 5xx and gRPC `Internal`/`Unknown` permanent, so one
-transient recipient failure dropped admitted data. The wrapper returns those
-to the ordinary backoff; the HTTP wrapper reads the status code from the
-upstream error message, which `TestClassifyErrorReadsTheUpstreamMessage` holds
-to the pinned release. A recipient that fails deterministically holds its queue
-until the deployment's queue alert fires. Other permanent errors, such as HTTP
-400 or 413, remain permanent so an invalid payload cannot pin a queue forever.
+exporters call HTTP 5xx, gRPC `Internal`/`Unknown` and gRPC `ResourceExhausted`
+without `RetryInfo` permanent, so one transient recipient failure dropped
+admitted data. The wrapper returns those to the ordinary backoff; the HTTP
+wrapper reads the status code from the upstream error message, which
+`TestClassifyErrorReadsTheUpstreamMessage` holds to the pinned release, and the
+gRPC wrapper keeps grpc-go's message-size refusals permanent by their message,
+which `TestClassifyResourceExhaustedReadsTheUpstreamStatus` holds. A recipient
+that fails deterministically holds its queue until the deployment's queue alert
+fires. Other permanent errors, such as HTTP 400 or 413 and an oversized gRPC
+message, remain permanent so an invalid payload cannot pin a queue forever.
 `TestRecipientHTTP500IsRetriedUntilDelivered` is the regression guard.
 
 Delivery is at least once. If a recipient accepts a request but its success
@@ -238,7 +247,8 @@ such as `api`.
   owns a distinct self-metrics port; read the ports and the ingest and sender
   batch caps from `config/edge.yaml`. The edge cap is the lowest of the three,
   because its producers are local.
-- One persistent gateway queue blocks on overflow and retries indefinitely.
+- One persistent gateway queue refuses on overflow with a retryable status and
+  retries indefinitely.
 - `resource_detection` stamps the local origin before redaction.
 - `host_metrics/storage` reports filesystem usage and utilisation through
   `metrics/self`. It is the only volume-space signal on macOS, where the host
@@ -335,7 +345,14 @@ and the generated module follows, because selection takes the maximum across the
 graph. A transitive dependency of an upstream component is not this repository's
 to pin. `replace` is forbidden — a version-form replacement overrides minimal
 version selection in both directions and downgrades as readily as it raises,
-reporting nothing when it does. Only a human adds one.
+reporting nothing when it does. Only a human adds one. The one a human added
+forks exporterhelper's persistent queue; it sits in `builder.yaml` and in both
+`internal/exporters/*/go.mod`, and its `builder.yaml` comment states why, the
+re-base on every Collector bump and the removal condition. `manifest resolve`
+rejects a replacement not based on the upstream pin or absent from an
+adaptation module that requires the replaced module, so a Collector pull
+request fails until the fork is re-based. Renovate leaves the fork's version
+alone; moving it is part of that re-base.
 
 The image scan rejects a fixable HIGH or CRITICAL finding in the built binary.
 Where it names a module this repository declares, raise it there. Neither the

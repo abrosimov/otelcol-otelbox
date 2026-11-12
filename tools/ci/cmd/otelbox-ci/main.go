@@ -115,6 +115,9 @@ func runManifestResolve(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := contract.CheckAdaptationReplacements(resolution.Replacements, adaptationModules); err != nil {
+		return err
+	}
 
 	fmt.Fprintf(stdout, "version=%s\n", resolution.Version)
 	fmt.Fprintf(stdout, "upstream_pin=%s\n", resolution.UpstreamPin)

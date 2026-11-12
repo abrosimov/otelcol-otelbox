@@ -25,11 +25,16 @@ The wrapper unwraps that result and converts only gRPC `Unauthenticated` and
 codes—into a throttled retry. With `retry_on_server_error`, it also returns
 server errors to the ordinary retry backoff: gRPC `Internal` and `Unknown`, and
 HTTP 5xx, whose status code the HTTP wrapper reads from the upstream error
-message because upstream maps every unnamed status to `Unknown`. Every other
-permanent response remains permanent.
+message because upstream maps every unnamed status to `Unknown`. The gRPC
+wrapper also retries `ResourceExhausted` that carries no `RetryInfo`, except
+grpc-go's refusals of a message above a size limit, recognised by their message
+like HTTP 413. Every other permanent response remains permanent.
 
 `UPSTREAM_VERSION`, the wrapper `go.mod` files and every component pin in
 `builder.yaml` form one dependency set. `otelbox-ci manifest resolve` rejects a
-mixed set. An upgrade must move all of them together and run the full harness;
+mixed set. The set includes the `replace` of exporterhelper by its
+persistent-queue fork: both `go.mod` files carry the line from `builder.yaml`'s
+`replaces`, so these tests run the queue the binary links; that comment states
+when the fork is re-based and removed. An upgrade must move all of them together and run the full harness;
 unit tests alone do not prove credential-file rereading or WAL recovery.
 

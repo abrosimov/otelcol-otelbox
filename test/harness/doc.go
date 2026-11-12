@@ -105,6 +105,12 @@
 // not fit must be refused, not acknowledged, and every record acknowledged
 // before it must reach the sink once the gateway returns.
 //
+// TestEdgeRefusesAtFullQueueWithARetryableStatus fills the edge queue while the
+// gateway is down. The first request that does not fit must be refused at once
+// with HTTP 503 and its gRPC counterpart with Unavailable, never held towards
+// the client's timeout; every acknowledged record must be delivered after
+// recovery and the refused request admitted once the queue drains.
+//
 // TestGatewayResendsWhenRecipientAcknowledgementIsLost kills the gateway after
 // the selected-traces recipient received a record but before it answered; the
 // restarted gateway must send the record again. A duplicate is the contract.

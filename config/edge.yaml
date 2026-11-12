@@ -137,8 +137,9 @@ receivers:
   # reports that its WAL is approaching a full disk. Every physical filesystem
   # is reported; the deployment alerts on the mount point holding
   # OTELBOX_STORAGE_DIR. These points leave through the same gateway queue they
-  # warn about, so the threshold must fire while that queue still drains, and
-  # the backend must also alert when the edge falls silent.
+  # warn about, so during an outage they are queued with everything else. A
+  # deployment must also run an out-of-band local watcher; see
+  # docs/reference/edge.md "Capacity signals".
   host_metrics/storage:
     collection_interval: 60s
     scrapers:
@@ -298,6 +299,12 @@ exporters:
     # applies to the decompressed message, so batch < receive envelope holds
     # whatever the codec is.
     compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
+    # Per attempt, and DeadlineExceeded is retried: a batch that cannot cross
+    # the slowest uplink within it is retried for ever and never delivered.
+    # Rule: at least 3 × largest compressed batch ÷ slowest uplink. 10s covers a
+    # 1.5 MiB batch that zstd shrinks at least 4× on a 1 Mbit/s uplink; a
+    # deployment that raises `batch.max_size` or disables compression
+    # recomputes it.
     timeout: 10s
     sending_queue:
       enabled: true
@@ -310,20 +317,33 @@ exporters:
       # has to stay under; an item count blocks whatever the items weigh. Keep
       # it below that cap so the overflow policy binds before a storage write
       # fails, and remember the cap applies per signal file.
+      #
+      # UNCOMPRESSED proto bytes, before `compression` above. Size the queue
+      # from `otelcol_exporter_enqueue_size_bytes`, never from wire throughput,
+      # which zstd shrinks by an order of magnitude or more.
       sizer: bytes
       # Unset would be zero, which `Validate` rejects outright — the one numeric
       # reference here that fails loudly. The default keeps it consistent with
       # the rest anyway.
       # A deployment override must remain larger than the largest accepted OTLP
-      # request; an oversized item cannot fit a blocking persistent queue.
+      # request plus the in-flight headroom under `batch` below; an item that
+      # can never fit is refused on every attempt.
       queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}
-      # Backpressure rather than silent loss: this role's producers are OTLP
-      # clients that hold their own data and retry.
-      block_on_overflow: true
+      # A full queue refuses at once with gRPC Unavailable / HTTP 503, which an
+      # OTLP client retries on its own budget. Blocking instead held the request
+      # until the client's export timeout cancelled it, and the client then
+      # dropped the batch without a retry. Data the client gives up on is lost
+      # before it is accepted, so a full queue is a capacity failure to alert on.
+      block_on_overflow: false
       # A record above max_size is dropped on its own after it was
       # acknowledged; the rest of its request is still exported. Keep the
       # invariant: max_size < the gateway's max_recv_msg_size_mib ≤ its
       # max_request_body_size.
+      #
+      # Items stay counted against queue_size until the batch carrying them is
+      # sent, so up to (num_consumers + 2) × max(max_size, largest request) of
+      # it is in flight rather than free. Raising max_size for large records
+      # raises that headroom, the gateway limits above and `timeout` with it.
       batch:
         flush_timeout: 200ms
         sizer: bytes
@@ -342,10 +362,12 @@ exporters:
       # Credential outages need a probe, not a hot retry loop. The watched
       # header file is read again before the next attempt.
       interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
-    # The pinned exporters call HTTP 5xx and gRPC Internal/Unknown permanent and
-    # drop admitted data on one transient failure; retry them on the backoff
-    # above instead. A recipient that fails deterministically then holds its
-    # queue until the deployment's queue alert fires.
+    # The pinned exporters call HTTP 5xx, gRPC Internal/Unknown and
+    # ResourceExhausted without RetryInfo permanent and drop admitted data on
+    # one transient failure; retry them on the backoff above instead. A
+    # recipient that fails deterministically then holds its queue until the
+    # deployment's queue alert fires. A refused oversized message stays
+    # permanent.
     retry_on_server_error:
       enabled: true
 

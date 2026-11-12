@@ -211,9 +211,12 @@ Outbound gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses
 retain the affected request in its recipient WAL and retry at
 `OTELBOX_AUTH_RETRY_INTERVAL`. Replacing a watched outbound header file takes
 effect without restarting the gateway. A recipient's server error (HTTP 5xx,
-gRPC `Internal` or `Unknown`) is retried on the ordinary backoff through
+gRPC `Internal` or `Unknown`) and a gRPC `ResourceExhausted` without
+`RetryInfo` are retried on the ordinary backoff through
 `retry_on_server_error`; a recipient that fails every attempt therefore holds
-its queue, and the queue-fill alert is what reports it. This is at-least-once delivery: a lost
+its queue, and the queue-fill alert is what reports it. A `ResourceExhausted`
+that refuses a message as too large stays permanent, as HTTP 413 does, because
+the same batch would be refused on every attempt. This is at-least-once delivery: a lost
 success response may produce a duplicate at the recipient.
 
 An HTTP recipient that answers 429 or 503 with `Retry-After` is not sent the
