@@ -34,8 +34,8 @@ Reference variables have safe absent-variable defaults:
 | `OTELBOX_MEMORY_SPIKE_LIMIT_MIB` | 80 MiB | Spike allowance below the hard threshold. |
 | `OTELBOX_EXPORTER_CONSUMERS` | 2 | Concurrent outbound workers. |
 | `OTELBOX_AUTH_RETRY_INTERVAL` | `1h` | Probe interval while the gateway rejects the outbound credential. |
-| `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 6 GiB | Per signal file; 1.5 times the queue capacity. |
-| `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Must exceed the 1 MiB accepted-request envelope and fit within storage capacity. |
+| `OTELBOX_STORAGE_MAX_SIZE_BYTES` | 6 GiB | Per signal file; at least 1.5 times the queue capacity, see [sizing invariants](#sizing-invariants). |
+| `OTELBOX_QUEUE_SIZE_BYTES` | 4 GiB | Per signal, in uncompressed OTLP bytes. Must exceed the outage budget plus the in-flight headroom and stay within storage capacity; see [sizing the queue](#sizing-the-queue). |
 | `OTELBOX_UPSTREAM_TLS_CERT_FILE` | none | Optional client certificate presented to the gateway leg. Absent means none is offered. |
 | `OTELBOX_UPSTREAM_TLS_KEY_FILE` | none | Private key for the certificate above. Supply both or neither. |
 | `OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL` | `1h` | How stale the client pair may be before the next handshake re-reads it. |
@@ -147,7 +147,8 @@ until a run says otherwise.
 The codec changes neither sizing invariant. `sizer: bytes` measures uncompressed
 queue items, and the gateway's `max_recv_msg_size_mib` applies to the
 decompressed message, so the 1.5 MiB sender batch stays inside the 2 MiB receive
-envelope regardless.
+envelope regardless. It does change the exporter `timeout`, which is derived
+from the compressed batch; see [the exporter timeout](#the-exporter-timeout).
 
 ## Langfuse trace-level fields on native traces
 
@@ -184,37 +185,198 @@ this role exists to retain.
 
 ## Durability
 
-The exporter queue writes through `file_storage/gateway`, uses byte-based
-capacity and blocks on overflow. Retry has no elapsed-time limit. Sender
-batching happens inside that persistent queue; there is no pipeline `batch`
-processor that could return success while retaining the record only in memory.
-The sender splits batches at 1.5 MiB, below the gateway's 2 MiB receive limit.
-
-The 4 GiB queue is a reference outage budget. Production should render
-`peak encoded bytes/second * outage seconds * safety factor` and retain the
-1.5 storage-to-queue ratio rather than copying the default unmeasured.
+The exporter queue writes through `file_storage/gateway` and uses byte-based
+capacity. Retry has no elapsed-time limit. Sender batching happens inside that
+persistent queue; there is no pipeline `batch` processor that could return
+success while retaining the record only in memory. The sender splits batches at
+1.5 MiB, below the gateway's 2 MiB receive limit.
 
 The harness forces this boundary: it posts a record while the gateway is down,
 requires HTTP 200, kills the edge with SIGKILL, reopens the same storage and
 requires the record to reach the gateway after recovery.
 
+### When the queue is full
+
+The queue sets `block_on_overflow: false`. A request that does not fit is
+refused at once, before anything is persisted: the receiver answers gRPC
+`Unavailable` or HTTP 503 without `Retry-After`. Both are retryable under the
+OTLP specification, so the producer's client retries the request on its own
+backoff, and each retry is admitted as soon as the queue has drained enough.
+`TestEdgeRefusesAtFullQueueWithARetryableStatus` holds this.
+
+Refusal does not make the edge responsible for the request. The producer still
+holds it, and only for as long as its own retry budget lasts: a client that
+gives up before the queue drains loses the batch. A full queue is therefore a
+capacity failure, and the [capacity signals](#capacity-signals) exist to report
+it well before it happens.
+
+Blocking was the earlier policy, and it was worse for exactly that producer. A
+blocked request waited until the client's own export timeout cancelled it; the
+enqueue then failed with `context canceled`, and the client, whose deadline had
+already passed, dropped the batch without a retry. That is how a full queue
+lost spans in practice. On the edge the producer is the only party that can
+still retry, so it must be given a status it acts on promptly.
+
+Records already in the WAL are unaffected. Restart recovery re-enqueues
+in-flight items without the capacity check, so a full queue never refuses its
+own replay.
+
+### Sizing the queue
+
+`sizer: bytes`, `queue_size` and `file_storage` `max_size` are in
+**uncompressed** OTLP protobuf bytes: the queue measures each request as it is
+encoded for the WAL, before the exporter compresses it for the wire. Do not
+size from wire or network throughput. `zstd` commonly shrinks OTLP telemetry
+by an order of magnitude or more, and a queue sized from the compressed rate is
+short by that same factor.
+
+Measure the rate from the edge's own metrics, which the profile publishes at
+`detailed` level:
+
+| Metric | Use |
+| --- | --- |
+| `otelcol_exporter_enqueue_size_bytes` (histogram) for `otlp_grpc/gateway`, per signal | The rate of its sum is the uncompressed bytes per second offered to the queue: the unit `queue_size` counts. It also records refused offers, so read it while the queue has room. |
+| `otelcol_exporter_queue_batch_send_size_bytes` (histogram) | Uncompressed bytes per sent batch. Over a steady period its summed rate equals the admitted rate, which makes it a cross-check. |
+
+Render, per signal:
+
+```text
+queue_size >= peak uncompressed bytes/second × outage seconds × safety factor
+              + in-flight headroom
+```
+
+Every signal has its own queue and WAL file, but `OTELBOX_QUEUE_SIZE_BYTES`
+sets all three, so size it for the busiest signal, usually traces. The 4 GiB
+default is a reference value, not a measurement.
+
+### In-flight headroom
+
+With sender batching, one reader takes items from the queue and hands them to
+the batcher, which sends up to `num_consumers` batches at once. An item remains
+counted against `queue_size` until every batch carrying part of it has been
+sent, so part of the queue is always held by data in flight rather than free
+for admission. At most:
+
+```text
+in-flight headroom ≈ (num_consumers + 2) × max(batch max_size, largest accepted request)
+```
+
+That is `num_consumers` batches being sent, the item the reader holds while it
+waits for a free worker, and the batch still filling towards `min_size`. During
+an outage the in-flight batches are the ones being retried, so this capacity
+does not come back until the gateway does. In the reference profile it is
+(2 + 2) × 1.5 MiB = 6 MiB of the 4 GiB queue.
+
+### Records larger than a batch
+
+A single span, log record or metric data point whose encoded size exceeds
+`batch.max_size` cannot be split. The batcher drops it after the producer was
+acknowledged and exports the rest of its request; the edge logs `Failed to split
+request.` with `single span exceeds the max size limit`, or the log-record or
+data-point equivalent. In the reference
+profile no accepted record can reach that point, because the 1 MiB receiver
+limit is below the 1.5 MiB `max_size`.
+
+A deployment that raises the receiver limits to accept larger records, such as
+LLM transcript spans up to a 128 MiB receiver limit, must move the rest of the
+invariants with them:
+
+1. raise `batch.max_size` to at least the new receiver limit, so every
+   acceptable record fits a batch;
+2. raise the gateway's `max_recv_msg_size_mib` above that `max_size`, with its
+   `max_request_body_size` at least as large. A gateway that refuses a batch as
+   too large answers `ResourceExhausted`, which stays permanent and drops the
+   batch;
+3. budget the larger in-flight headroom: at two consumers and a 128 MiB
+   `max_size`, (2 + 2) × 128 MiB = 512 MiB of the queue, before any outage
+   budget;
+4. recompute [the exporter timeout](#the-exporter-timeout) for the larger
+   batch.
+
+### Sizing invariants
+
+Check a rendered deployment against every row:
+
+| Invariant | Reference values | Why |
+| --- | --- | --- |
+| Edge receiver limit (`max_recv_msg_size_mib`, `max_request_body_size`) ≤ `batch.max_size` | 1 MiB ≤ 1.5 MiB | A record above `max_size` is dropped after acknowledgement. |
+| `batch.max_size` < gateway `max_recv_msg_size_mib` ≤ gateway `max_request_body_size` | 1.5 MiB < 2 MiB ≤ 2 MiB | The gateway refuses an oversized batch, permanently. |
+| `queue_size` ≥ outage budget + (`num_consumers` + 2) × max(`batch.max_size`, receiver limit) | 4 GiB ≥ budget + 6 MiB | In-flight items hold queue capacity until sent. |
+| `file_storage` `max_size` ≥ 1.5 × `queue_size`, per signal | 6 GiB ≥ 1.5 × 4 GiB | Below. |
+| `timeout` ≥ 3 × largest compressed batch ÷ slowest uplink | 10 s ≥ 9.4 s | A batch that cannot cross the uplink within one attempt is never delivered. |
+
+The storage rule exists so that the queue, not the storage, is what refuses
+admission. `max_size` caps the bbolt file, not the logical bytes the queue
+counts: the file also carries page and B+tree overhead, a freelist, and pages
+an outage's churn freed but did not return, since bbolt reclaims space only by
+compaction. A queue refusal is clean and retryable. A storage refusal reaches
+the read side too, where a failed metadata write while dispatching deletes an
+acknowledged item ([PC-13](../research/problem-cards/PC-13-read-side-storage-failure-drops-acknowledged-item.md)).
+1.5 is a margin for that overhead, not a measured bound; keep it, and keep the
+volume itself larger than every signal's `max_size` together.
+
+### Queue size accounting
+
+Upstream exporterhelper v0.164.0 leaks the persistent queue's size counters: a
+put that fails to persist keeps its size counted, and a request dropped on read
+or on re-queue at start-up never releases its size. Over a long outage the
+leaked size fills `queue_size`, and the queue refuses data it has room for.
+The binary and the wrapper tests therefore build exporterhelper from the fork
+branch `persistent_queue_size_leak` of
+[abrosimov/opentelemetry-collector](https://github.com/abrosimov/opentelemetry-collector),
+through the one `replaces` entry in `builder.yaml`, whose comment carries the
+re-base rule. The fork goes once a Collector release contains the fix.
+
+### The exporter timeout
+
+`timeout` bounds one send attempt. The exporter retries `DeadlineExceeded`, so
+a timeout too short for a batch is not a loss but a stall: that batch is sent,
+cut off at the deadline and sent again for ever, and once every consumer holds
+such a batch the queue stops draining on that link. A longer timeout costs only recovery time after a
+network change, when an attempt on a dead connection is held until it expires.
+
+```text
+timeout >= 3 × largest compressed batch ÷ slowest supported uplink
+```
+
+The factor of three covers connection and TLS set-up, slow start and
+retransmission on a lossy link. For the reference profile: the largest batch is
+1.5 MiB uncompressed; assuming `zstd` shrinks it at least 4×, about 384 KiB
+crosses the wire; on a 1 Mbit/s uplink (125 kB/s), the weak end of a mobile
+tether or a congested hotel network, that takes 3.1 s, and three times that is
+9.4 s. The reference 10 s therefore holds and is unchanged.
+
+It does not hold for every rendering. With `OTELBOX_UPSTREAM_COMPRESSION=none`
+and no compressing transport, the full 1.5 MiB needs a 3.8 Mbit/s uplink to
+meet the rule at 10 s. A deployment that raises `batch.max_size` for large
+records needs far more: a 128 MiB batch that compresses 4× takes about 270 s at
+1 Mbit/s, so the rule asks for about 13 minutes.
+
 ## Capacity signals
 
-Alert before the WAL stops admitting data; the edge reports what that needs
+Alert before the queue stops admitting data. The edge reports what that needs
 through its own `metrics/self` pipeline:
 
 | Signal | Metric | Suggested alert |
 | --- | --- | --- |
 | Queue fill | `otelcol_exporter_queue_size / otelcol_exporter_queue_capacity` for `otlp_grpc/gateway`; both are bytes under `sizer: bytes`, although they declare `{batch}` | above 0.5 |
+| Refused admission | `otelcol_exporter_enqueue_failed_spans`, `_metric_points`, `_log_records` | any increase |
 | Volume space | `system.filesystem.utilization` from `host_metrics/storage`, selected by the `mountpoint` that holds `OTELBOX_STORAGE_DIR` | above 0.8 |
 | Silence | absence of any point from this edge | longer than a few collection intervals |
 
 `file_storage` exports no metric for its file size or `max_size`, so volume
-space and queue fill stand in for it. These points travel through the queue
-they describe: when the gateway is unreachable they wait in the WAL with
-everything else, so only the silence alert fires during an outage, and the
-others must fire early enough for the queue to still drain. On macOS the WAL
-usually lives on the `/System/Volumes/Data` APFS volume, not `/`.
+space and queue fill stand in for it. On macOS the WAL usually lives on the
+`/System/Volumes/Data` APFS volume, not `/`.
+
+These points travel through the very queue they warn about. While the gateway
+is unreachable they wait in the WAL with everything else, so a backend sees the
+queue filling only after the outage has ended, and sees the silence alert
+during it, which cannot tell a laptop that is offline from one that is about to
+refuse data. A deployment **must** therefore run an out-of-band watcher on the
+same host: it reads the queue-fill and refused-admission series directly from
+the local `:8888/metrics` endpoint and the free space of the volume holding
+`OTELBOX_STORAGE_DIR`, and raises a local notification that does not depend on
+the gateway. The watcher belongs to the deployment, not to this repository.
 
 ## Validate and operate
 

@@ -83,5 +83,10 @@
       groupSlug: 'otel-collector',
       automerge: true,
     },
+    {
+      description: 'The exporterhelper fork named by the `replace` in builder.yaml and the wrapper go.mod files stays on the commit carrying its fix. Its default branch and tags hold upstream code without it, so any digest or version update would drop the fix silently. The fork moves only when it is re-based for a Collector release, which `manifest resolve` forces',
+      matchPackageNames: ['github.com/abrosimov/opentelemetry-collector/**'],
+      enabled: false,
+    },
   ],
 }

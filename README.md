@@ -57,18 +57,23 @@ defence in depth rather than a general PII guarantee; the exact inspected
 carriers, blind spots and producer duties are in the
 [credential redaction boundary](docs/reference/redaction.md). Every network exporter uses
 a bounded `file_storage` sending queue and retries transient failures
-indefinitely. Edge and gateway queues block their OTLP callers when full so
-those callers can retry. The host agent cannot back-pressure scrapers; it
-retains an outage up to its WAL capacity and rejects new samples once full.
+indefinitely. A full edge queue refuses new requests at once with gRPC
+`Unavailable` or HTTP 503, which OTLP clients retry; data a client gives up on
+is lost at the producer, so a deployment must alert before the queue fills (see
+[edge durability](docs/reference/edge.md#when-the-queue-is-full)). Gateway
+queues block their callers when full, backpressuring the edge. The host agent
+cannot back-pressure scrapers; it retains an outage up to its WAL capacity and
+rejects new samples once full.
 
 Outbound authentication failures are graceful degradation, not a drop path.
 gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 retain the accepted
 request and retry every `${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}`. Replacing the
 watched credential file lets the live process drain its queue. Server errors,
-HTTP 5xx and gRPC `Internal`/`Unknown`, retry on the ordinary backoff through
-`retry_on_server_error` instead of dropping admitted data. Other permanent
-protocol errors, such as HTTP 400 or 413, still fail permanently so a malformed
-payload cannot block all later data. The transport is at least once: a lost success response can cause a
+HTTP 5xx and gRPC `Internal`/`Unknown`, and gRPC `ResourceExhausted` without
+`RetryInfo` retry on the ordinary backoff through `retry_on_server_error`
+instead of dropping admitted data. Other permanent protocol errors, such as
+HTTP 400 or 413 and a gRPC message refused as too large, still fail permanently
+so a malformed payload cannot block all later data. The transport is at least once: a lost success response can cause a
 duplicate, and exactly-once delivery would require recipient-side idempotency.
 
 Gateway recipient eligibility is part of required delivery. Ordinary signals

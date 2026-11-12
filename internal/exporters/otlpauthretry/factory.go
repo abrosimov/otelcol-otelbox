@@ -2,6 +2,7 @@ package otlpauthretry
 
 import (
 	"context"
+	"regexp"
 
 	"go.opentelemetry.io/otel/metric/noop"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	upstream "go.opentelemetry.io/collector/exporter/otlpexporter"
@@ -20,6 +22,10 @@ import (
 )
 
 var componentType = component.MustNewType("otlp_grpc")
+
+// grpc-go's refusals of a message above a size limit: the same batch is refused
+// on every attempt, so retrying it would pin the queue.
+var messageSizeRefusal = regexp.MustCompile(`larger than max|message too large`)
 
 func NewFactory() exporter.Factory {
 	return exporter.NewFactory(
@@ -119,8 +125,10 @@ func innerSettings(settings exporter.Settings) exporter.Settings {
 
 // classifyError reclassifies the upstream exporter's permanent errors that
 // this wrapper retries: authentication failures after a long throttle, and
-// server errors (`Internal`, `Unknown`) through the ordinary retry backoff.
-// Every other error is returned unchanged.
+// server errors (`Internal`, `Unknown`) and `ResourceExhausted` without
+// `RetryInfo` through the ordinary retry backoff. A `ResourceExhausted` that
+// refuses an oversized message stays permanent. Every other error is returned
+// unchanged.
 func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerErrorRetryConfig) error {
 	if err == nil {
 		return err
@@ -136,6 +144,10 @@ func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerError
 		}
 	case codes.Internal, codes.Unknown:
 		if serverRetry.Enabled {
+			return grpcStatus.Err()
+		}
+	case codes.ResourceExhausted:
+		if serverRetry.Enabled && consumererror.IsPermanent(err) && !messageSizeRefusal.MatchString(grpcStatus.Message()) {
 			return grpcStatus.Err()
 		}
 	}
