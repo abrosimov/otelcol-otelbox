@@ -88,5 +88,10 @@
       matchPackageNames: ['github.com/abrosimov/opentelemetry-collector/**'],
       enabled: false,
     },
+    {
+      description: 'The release workflow owns Formula/: it rewrites the release-asset tag segment and both checksums after publication. The homebrew manager does not know that contract and once replaced the binary asset URL with the source tarball, which the workflow cannot rewrite back',
+      matchManagers: ['homebrew'],
+      enabled: false,
+    },
   ],
 }

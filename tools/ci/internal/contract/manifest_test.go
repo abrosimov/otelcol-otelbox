@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,67 @@ exporters:
 	}
 	if resolution.Version != "2.1.0" || resolution.UpstreamPin != "v0.158.0" || resolution.UpstreamVersion != "0.158.0" {
 		t.Fatalf("ResolveManifest() = %#v", resolution)
+	}
+}
+
+func manifestWithContribPins(corePin string, contribPins ...string) string {
+	manifest := "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver " + corePin + "\nprocessors:\n  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor " + corePin + "\n"
+	for index, pin := range contribPins {
+		manifest += fmt.Sprintf("  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/component%dprocessor %s\n", index, pin)
+	}
+	return manifest
+}
+
+func TestResolveManifestAcceptsAContribPatchReleaseOnTheCoreMinorLine(t *testing.T) {
+	for _, contribPin := range []string{"v0.158.0", "v0.158.1", "v0.158.12"} {
+		t.Run(contribPin, func(t *testing.T) {
+			resolution, err := ResolveManifest(strings.NewReader(manifestWithContribPins("v0.158.0", contribPin, contribPin)))
+			requireNoError(t, err)
+			if resolution.UpstreamPin != "v0.158.0" || resolution.UpstreamVersion != "0.158.0" {
+				t.Fatalf("ResolveManifest() = %#v, want the otlpreceiver pin v0.158.0", resolution)
+			}
+		})
+	}
+}
+
+func TestResolveManifestRejectsContribPinsOffTheCorePatchLine(t *testing.T) {
+	tests := []struct {
+		name     string
+		corePin  string
+		contrib  []string
+		contains string
+	}{
+		{name: "next contrib minor", corePin: "v0.158.0", contrib: []string{"v0.159.0"}, contains: "not a contrib release on the core line"},
+		{name: "previous contrib minor", corePin: "v0.158.0", contrib: []string{"v0.157.3"}, contains: "not a contrib release on the core line"},
+		{name: "contrib behind a core patch", corePin: "v0.158.1", contrib: []string{"v0.158.0"}, contains: "not a contrib release on the core line"},
+		{name: "contrib major differs", corePin: "v0.158.0", contrib: []string{"v1.158.0"}, contains: "not a contrib release on the core line"},
+		{name: "contrib pre-release", corePin: "v0.158.0", contrib: []string{"v0.158.1-rc.1"}, contains: "not a contrib release on the core line"},
+		{name: "contrib without v prefix", corePin: "v0.158.0", contrib: []string{"0.158.1"}, contains: "not a contrib release on the core line"},
+		{name: "two contrib releases", corePin: "v0.158.0", contrib: []string{"v0.158.0", "v0.158.1"}, contains: "mixes contrib pins"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ResolveManifest(strings.NewReader(manifestWithContribPins(test.corePin, test.contrib...)))
+			if err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("ResolveManifest() error = %v, want one containing %q", err, test.contains)
+			}
+		})
+	}
+}
+
+func TestResolveManifestHoldsNonContribPinsToTheOtlpreceiverPin(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"core module on a patch the core never released": "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0\nprocessors:\n  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.158.1\n",
+		"local module on the contrib patch":              "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0\n  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.158.1\nexporters:\n  - gomod: github.com/abrosimov/otelcol-otelbox/exporter/otlpauthretry v0.158.1\n",
+		"module path only resembling contrib":            "dist:\n  version: 2.1.0\nreceivers:\n  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0\n  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib-fork/receiver/prometheusreceiver v0.158.1\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ResolveManifest(strings.NewReader(manifest))
+			if err == nil || !strings.Contains(err.Error(), "manifest mixes component pins") {
+				t.Fatalf("ResolveManifest() error = %v, want a mixed-pin rejection", err)
+			}
+		})
 	}
 }
 

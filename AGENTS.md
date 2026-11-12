@@ -319,6 +319,9 @@ load and conceal adoption drift.
 Upstream module versions never appear in the artefact version. The workflow
 derives OCB's version from the `otlpreceiver` pin and rejects any other `gomod`
 pin, `UPSTREAM_VERSION` file or wrapper Collector requirement that disagrees.
+The one tolerance is contrib, which cuts patch releases on an unchanged core:
+every contrib pin must name one release, on the core pin's minor line and at
+or above its patch.
 Go is pinned exactly — never to a range — in the workflows' `setup-go` steps,
 which are the one place to read or change it, and every step carries the same
 version. The exact pin exists because a Go
