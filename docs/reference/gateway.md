@@ -146,6 +146,10 @@ Reference defaults apply only when a variable is absent:
 | `OTELBOX_SELECTED_TRACES_DEDUP_TTL` | `72h` | Minimum time a selected span stays known to `span_dedup/selected_traces`. |
 | `OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES` | 500000 | Span identities kept; also the index's heap ceiling, about 80 B each. |
 | `OTELBOX_SELECTED_TRACES_DEDUP_STORAGE_MAX_SIZE_BYTES` | 256 MiB | Deduplication index file. |
+| `OTELBOX_TRACES_DEDUP_TTL` | `1h` | Time since its last arrival that an ordinary span stays known to `span_dedup/traces`. |
+| `OTELBOX_TRACES_DEDUP_MAX_ENTRIES` | 200000 | Span identities `span_dedup/traces` keeps in memory, about 16 MiB of heap. |
+| `OTELBOX_SELF_STORAGE_MAX_SIZE_BYTES` | 768 MiB | Self-metrics WAL. |
+| `OTELBOX_SELF_QUEUE_SIZE_BYTES` | 512 MiB | Self-metrics queue. |
 
 The gateway profile assumes a cgroup memory limit. Set that limit in the
 deployment and set `GOMEMLIMIT` below it; otherwise a percentage of host memory
@@ -158,9 +162,15 @@ Queue capacity is an outage budget, not a round number to copy blindly. For
 each recipient and signal, estimate:
 
 ```text
-queue bytes >= peak encoded bytes/second * required outage seconds * safety factor
+queue bytes >= peak stored bytes/second * required outage seconds * safety factor
 storage max_size >= queue bytes * 1.5
 ```
+
+Every queue sets `storage_compression: zstd`, so queue bytes are the
+compressed bytes an item takes in its WAL, the same unit as `max_size`; read
+the stored rate from `otelcol_exporter_queue_size` and the uncompressed one from
+`otelcol_exporter_enqueue_size_bytes`. [The edge guide](edge.md#sizing-the-queue)
+describes the measurement.
 
 A safety factor between 1.25 and 2 covers burstiness and estimation error. The
 reference reserves 8/12 GiB for logs, 1/2 GiB for metrics and 8/12 GiB for
@@ -168,12 +178,16 @@ traces; the larger metrics ratio leaves additional room for database overhead.
 Gateway rates are aggregate across all edges and local agents; reusing an
 edge-sized budget without multiplying the measured ingress rate is incorrect.
 
-The reference topology has five bbolt files: three for the all-signal
-recipient, one for the selected-traces WAL and one for its deduplication index.
-Their configured caps total 38.25 GiB before filesystem and compaction
-headroom. A deployment with N all-signal recipients has `3N + 2` files and a
-default cap of `26 GiB * N + 12.25 GiB` while the selected-traces branch
-remains present. Size and alert from the rendered set.
+The reference topology has six bbolt files: three for the all-signal
+recipient, one for the selected-traces WAL, one for its deduplication index and
+one for the gateway's own metrics. Their configured caps total 39 GiB before
+filesystem and compaction headroom. A deployment with N all-signal recipients
+has `3N + 3` files and a default cap of `26 GiB * N + 13 GiB` while the
+selected-traces branch remains present. Size and alert from the rendered set.
+
+`metrics/self` has its own exporter, `otlp_grpc/self_metrics`, and WAL, so a
+full metrics queue does not refuse the series that report it. That queue does
+not block: a held scrape only costs the next one.
 
 The default request ladder prevents a single accepted record from becoming
 unsendable after acknowledgement:
@@ -204,7 +218,16 @@ truncate the file. The harness proves that replacement activates the new token
 and rejects the previous one.
 
 Inbound TLS termination belongs to the deployment. A bearer token must never
-cross an unencrypted network. All outbound exporters retain secure defaults;
+cross an unencrypted network.
+
+The gRPC receiver permits a client ping every 10 s, also with no request in
+flight. Edge and host agent ping every 30 s so that a connection that died
+without a reset is replaced within 40 s instead of after the kernel's
+retransmission timeout; under the grpc-go default policy, one ping in five
+minutes, the gateway would answer them with GOAWAY `too_many_pings`. A front end
+that terminates gRPC before the gateway needs the same policy. The recipient
+exporters set no keepalive: their peer's policy is not this repository's to
+know, and a ping it does not permit ends the connection. All outbound exporters retain secure defaults;
 deliberate private plaintext must be stated in the rendered configuration.
 
 Outbound gRPC `Unauthenticated`/`PermissionDenied` and HTTP 401/403 responses
@@ -244,14 +267,32 @@ classified and unclassified trace resources, the request is one acknowledgement
 unit and can block on the selected recipient. The coupling and SIGKILL harness
 tests cover the queue-headroom, overflow and replay boundaries.
 
-## Duplicate removal on the selected-traces branch
+While such a request blocks, the all-signal branch may already have accepted
+it, and the producer retries the whole request for as long as the selected
+recipient is down: an edge holds its two in-flight batches and re-sends them
+about every 40 s. Without deduplication each retry would enqueue the same spans
+in the trace WAL again, about 270 MiB an hour per edge, until that WAL filled as
+well. `span_dedup/traces` removes those copies; see below.
+`TestGatewayRetriedMixedRequestReachesTheOrdinaryRecipientOnce` holds it.
+
+## Duplicate removal on the trace branches
 
 A recipient that stores every copy of a span turns each re-send into a second
 row. `span_dedup/selected_traces`, a processor this repository builds, sits
 after `filter/selected_traces` and drops a span whose `(trace_id, span_id)`
 the selected-traces exporter queue has already accepted. It removes producer
 replays and edge re-sends that reach the gateway again, provided the producer
-keeps a span's IDs on replay. Ordinary recipients are not deduplicated.
+keeps a span's IDs on replay.
+
+`span_dedup/traces` is the same processor on the ordinary `traces` branch,
+configured without storage. Its duplicates come from the retry loop described
+under [required delivery](#required-delivery-and-coupling), which lives inside
+one process, so its index is kept in memory only: no fsync per request, and a
+restart costs at most one copy of each request then in flight. Its one-hour TTL
+and 200,000 identities need only cover the gap between two retries of the same
+request, because a span that arrives again is refreshed. Logs and metrics are
+not deduplicated: each has a single recipient pipeline, so fan-out makes no
+copies of them.
 
 - **Never a loss.** A span is remembered only after the exporter's persistent
   queue accepted it. A refused attempt, such as a full queue or an expired
@@ -268,7 +309,10 @@ keeps a span's IDs on replay. Ordinary recipients are not deduplicated.
 - **Retention.** A remembered span stays known for at least
   `OTELBOX_SELECTED_TRACES_DEDUP_TTL` and at most one sixteenth of it longer,
   and the oldest go first once `OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES` is
-  reached. Producer replays retry every few minutes but may replay a
+  reached. A span that arrives again once it has aged into the older half of
+  the index is moved to its newest segment, so retention counts from its last
+  arrival and a request that is re-sent for hours stays known; each identity is
+  held at most a few times over, so the cap still bounds memory. Producer replays retry every few minutes but may replay a
   transcript hours later; 72 hours also covers a workstation closed over a
   weekend. 500,000 identities hold the full 72 hours at up to about 7,000
   selected spans an hour while capping the heap at about 40 MiB. Above that
@@ -281,8 +325,10 @@ keeps a span's IDs on replay. Ordinary recipients are not deduplicated.
   configuration that restates `service.extensions` must keep
   `file_storage/selected_traces_dedup`, or the gateway refuses to start.
 - **Metrics.** `otelcol_processor_span_dedup_duplicate_spans` (Prometheus
-  `_total`), labelled `processor="span_dedup/selected_traces"`, counts dropped
-  duplicates.
+  `_total`), labelled `processor="span_dedup/selected_traces"` or
+  `processor="span_dedup/traces"`, counts dropped duplicates. A rising
+  `span_dedup/traces` count is a selected recipient that is down while traffic
+  continues.
 
 One window remains. The processor runs before the exporter queue, so a resend
 from that queue is invisible to it: when the recipient stores a request but its

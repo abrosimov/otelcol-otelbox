@@ -81,7 +81,7 @@ service:
     # checks when asking whether the test still runs redaction.
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets]
+      processors: [memory_limiter, redaction/secrets, span_dedup/traces]
       exporters: [file/sink]
     # Inherited unchanged: the selected-traces HTTP exporter, its persistent
     # queue and deduplication are part of the contract this overlay proves.

@@ -96,19 +96,24 @@ read the same variables, so a shared host identity needs no separate rendering.
 The outbound queue persists through `file_storage/gateway`, batches after
 enqueue and retries transient failure indefinitely. Authentication rejection
 retains the request and probes again at `OTELBOX_AUTH_RETRY_INTERVAL`; replacing
-the watched header file recovers without a process restart. Unlike edge and
-gateway, it does not block when full. Scrape receivers cannot be back-pressured:
+the watched header file recovers without a process restart. Items are stored as
+zstd frames and `OTELBOX_QUEUE_SIZE_BYTES` counts their stored bytes, as on
+[the edge](edge.md#sizing-the-queue). Like the edge and unlike the gateway, it
+does not block when full. Scrape receivers cannot be back-pressured:
 waiting would merely miss every collection cycle during the wait. The WAL
 therefore retains a bounded outage and rejects new samples at capacity. Monitor
 capacity well before that boundary.
 
 The sender splits at 1.5 MiB, below the gateway's 2 MiB receive envelope. That
-holds whatever `OTELBOX_UPSTREAM_COMPRESSION` selects: the queue sizer measures
+holds whatever `OTELBOX_UPSTREAM_COMPRESSION` selects: the batch sizer measures
 uncompressed items and the gateway's receive limit applies to the decompressed
 message. The leg defaults to `zstd` because its far end is this same binary and
 the codec is therefore registered there; see
 [the edge guide](edge.md#compression) for the full reasoning and for why the
 gateway's recipient exporters keep `gzip`.
+
+The exporter pings the gateway every 30 s, so a connection that died without a
+reset is replaced within 40 s; see [the edge guide](edge.md#the-exporter-timeout).
 
 ## Endpoints and validation
 

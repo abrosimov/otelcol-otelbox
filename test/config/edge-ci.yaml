@@ -64,6 +64,13 @@ exporters:
       # serves it; nothing consults the runner's trust store, because
       # include_system_ca_certs_pool defaults to false and only this pool is used.
       ca_file: ${env:OTELBOX_CI_EDGE_CA_FILE}
+  # The self-metrics exporter dials the same gateway and needs the same trust
+  # anchor and probe interval.
+  otlp_grpc/gateway_self:
+    retry_on_auth_failure:
+      interval: 200ms
+    tls:
+      ca_file: ${env:OTELBOX_CI_EDGE_CA_FILE}
 
 service:
   telemetry:

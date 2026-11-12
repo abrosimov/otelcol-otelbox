@@ -1,7 +1,7 @@
 github.com/Microsoft/go-winio v0.6.4 h1:kJF2pamtYCWXf0xAT8sAkwKC0pMl2HYBrRPHAqyUc+g=
 github.com/Microsoft/go-winio v0.6.4/go.mod h1:1xl5JXG4ze/m74GH6Dc4Mwxfc3VL5siRVQjIAlHH07U=
-github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112140826-33b610adf7d3 h1:wM1Zvz2JqqLGYJgS50NGoStb4u9HFzjIK1QyDBD3BA0=
-github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112140826-33b610adf7d3/go.mod h1:jVFcOho2kR1kqYOzyhRfhkDVS8mnKkx+5INet9PX2rM=
+github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112212127-e29a212a5ddb h1:g+FDUJsWszvPYudsnB9hM4SwL1+vC5j2he38z0RLH9M=
+github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112212127-e29a212a5ddb/go.mod h1:hi6cUQgy36zm40QIAxeuogCGwCbTIcIoE2r9XjQR1D4=
 github.com/cenkalti/backoff/v7 v7.0.1 h1:+ulHti5s1d9QnfyOnLWVmQ/SaZ+TJQF9OdOI0i9BGZI=
 github.com/cenkalti/backoff/v7 v7.0.1/go.mod h1:qcKBGwsu4hpxHtQ8tWYsQ+ifzx2+sS+Xx/3jfe30lI8=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

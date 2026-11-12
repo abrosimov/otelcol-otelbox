@@ -29,16 +29,24 @@ type harness struct {
 
 func startProcessor(t *testing.T, client *memoryClient, next consumer.Traces) harness {
 	t.Helper()
+	config := createDefaultConfig().(*Config)
+	config.Storage = storageID
+	return startProcessorWith(t, config, client, next)
+}
+
+func startProcessorWith(t *testing.T, config *Config, client *memoryClient, next consumer.Traces) harness {
+	t.Helper()
 
 	reader := sdkmetric.NewManualReader()
 	settings := processortest.NewNopSettings(componentType)
 	settings.MeterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	config := createDefaultConfig().(*Config)
-	config.Storage = storageID
 
 	created, err := NewFactory().CreateTraces(context.Background(), settings, config, next)
 	require.NoError(t, err)
-	host := extensionHost{storageID: &memoryExtension{client: client}}
+	host := extensionHost{}
+	if client != nil {
+		host[storageID] = &memoryExtension{client: client}
+	}
 	require.NoError(t, created.Start(context.Background(), host))
 	t.Cleanup(func() { require.NoError(t, created.Shutdown(context.Background())) })
 
@@ -232,4 +240,44 @@ func testKeyFor(traceByte, spanByte byte) spanKey {
 	key[0] = traceByte
 	key[16] = spanByte
 	return key
+}
+
+func TestIndexWithoutStorageDropsDuplicates(t *testing.T) {
+	sink := &consumertest.TracesSink{}
+	config := createDefaultConfig().(*Config)
+	h := startProcessorWith(t, config, nil, sink)
+
+	require.NoError(t, h.processor.ConsumeTraces(context.Background(), tracesWithSpans(1)))
+	require.NoError(t, h.processor.ConsumeTraces(context.Background(), tracesWithSpans(1, 2)))
+
+	require.Equal(t, []byte{1, 2}, spanIDs(sink.AllTraces()))
+	require.Equal(t, int64(1), h.duplicatesCounted(t))
+}
+
+// A request held by a sibling pipeline is re-sent for as long as that pipeline refuses it, while other
+// traffic keeps arriving. Each of its spans must reach this pipeline's next consumer once.
+func TestRequestReSentDuringFreshTrafficReachesTheNextConsumerOnce(t *testing.T) {
+	sink := &consumertest.TracesSink{}
+	config := createDefaultConfig().(*Config)
+	config.MaxEntries = 640
+	h := startProcessorWith(t, config, nil, sink)
+
+	require.NoError(t, h.processor.ConsumeTraces(context.Background(), tracesWithSpans(200, 201)))
+	for round := range 50 {
+		fresh := ptrace.NewTraces()
+		for n := range 40 {
+			spanWith(fresh, byte(2+round), byte(n), "fresh")
+		}
+		require.NoError(t, h.processor.ConsumeTraces(context.Background(), fresh))
+		require.NoError(t, h.processor.ConsumeTraces(context.Background(), tracesWithSpans(200, 201)))
+	}
+
+	stuck := 0
+	for _, id := range spanIDs(sink.AllTraces()) {
+		if id >= 200 {
+			stuck++
+		}
+	}
+	require.Equal(t, 2, stuck)
+	require.Equal(t, int64(100), h.duplicatesCounted(t))
 }

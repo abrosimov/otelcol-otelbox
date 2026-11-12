@@ -8,6 +8,8 @@ import (
 )
 
 type Config struct {
+	// Storage names the storage extension that persists the index. Without it the index lives in memory
+	// alone and starts empty after a restart.
 	Storage    component.ID  `mapstructure:"storage"`
 	TTL        time.Duration `mapstructure:"ttl"`
 	MaxEntries int           `mapstructure:"max_entries"`
@@ -15,9 +17,6 @@ type Config struct {
 
 func (config *Config) Validate() error {
 	var errs []error
-	if config.Storage == (component.ID{}) {
-		errs = append(errs, errors.New(`"storage" must name a storage extension`))
-	}
 	if config.TTL <= 0 {
 		errs = append(errs, errors.New(`"ttl" must be positive`))
 	}
