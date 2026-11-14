@@ -13,7 +13,8 @@ status: active
 authorship: agent
 assistant: Claude Code
 source_refs:
-  - "github.com/abrosimov/opentelemetry-collector@e29a212a5ddb exporter/exporterhelper/internal/queue/persistent_queue.go"
+  - "github.com/abrosimov/opentelemetry-collector@c9c8d8d5bf5a exporter/exporterhelper/internal/queue/persistent_queue.go"
+  - "internal/exporters/otlpauthretry/storage_compression.go"
   - "go.opentelemetry.io/collector/exporter/otlpexporter@v0.164.0 factory.go"
   - "google.golang.org/grpc@v1.85.0 internal/transport/http2_client.go"
 related:
@@ -101,8 +102,8 @@ permits it.
 
 A full edge queue refuses with a retryable status, and the producer's SDK
 budget decides what is lost. The queue counted uncompressed bytes against a
-disk that held them uncompressed. With `storage_compression: zstd` the queue
-counts and stores compressed bytes, so the same disk budget holds the outage
+disk that held them uncompressed. With the wrappers' `storage_compression: zstd`
+the queue stores compressed items, and the fork counts the bytes it stores, so the same disk budget holds the outage
 volume divided by the compression ratio. The edge and gateway self metrics now
 use a queue of their own, so the signals reporting a full queue are not
 refused with it.
@@ -110,8 +111,9 @@ refused with it.
 ### Evidence
 
 - **Claim:** under `zstd`, `queue_size` counts stored bytes.
-- **Proof:** fork `persistent_queue.go`, `bytesSizeOf`;
-  `TestPersistentQueue_CompressedBytesSizerCountsStoredBytes`.
+- **Proof:** fork `persistent_queue.go`, `storedSize`;
+  `TestPersistentQueue_BytesSizerCountsStoredBytes`; wrapper
+  `TestPersistentQueueStoresZstdFramesAndReadsThemBack`.
 - **What this proves:** capacity and `max_size` share one unit. The ratio for a
   given workload is not measured here.
 

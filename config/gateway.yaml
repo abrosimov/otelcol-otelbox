@@ -284,10 +284,10 @@ exporters:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/logs
-      storage_compression: zstd
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       # A deployment override must remain larger than the 2 MiB ingest
@@ -319,10 +319,10 @@ exporters:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/metrics
-      storage_compression: zstd
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       # A deployment override must remain larger than the 2 MiB ingest
@@ -354,10 +354,10 @@ exporters:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/traces
-      storage_compression: zstd
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       # A deployment override must remain larger than the 2 MiB ingest
@@ -394,10 +394,10 @@ exporters:
       authenticator: headers_setter/selected_traces
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/selected_traces
-      storage_compression: zstd
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       queue_size: ${env:OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES:-8589934592}
@@ -429,10 +429,10 @@ exporters:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/self_metrics
-      storage_compression: zstd
       num_consumers: 1
       sizer: bytes
       queue_size: ${env:OTELBOX_SELF_QUEUE_SIZE_BYTES:-536870912}

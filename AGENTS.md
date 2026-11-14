@@ -114,11 +114,13 @@ signals queue behind the outage. Edge and gateway send their own metrics
 (`metrics/self`) on a separate non-blocking exporter and WAL, so a full main
 queue does not also refuse the signals that report it.
 
-Every persistent queue sets `storage_compression: zstd`, which the forked
-exporterhelper provides: items are stored as zstd frames and, under
-`sizer: bytes`, `queue_size` counts stored bytes, the unit `file_storage`
-`max_size` caps. Keep `max_size` at least 1.5 × `queue_size`; that margin is
-bbolt overhead only. A storage that does reach its cap no longer deletes an
+Every network exporter sets `storage_compression: zstd`, a key of the
+wrappers in `internal/exporters/`: they wrap the upstream queue encoding so
+items are stored as zstd frames, and the forked exporterhelper counts a
+persistent item at the bytes it stores, so under `sizer: bytes` `queue_size`
+counts stored bytes, the unit `file_storage` `max_size` caps. The wrappers own
+the zstd dependency; exporterhelper takes none. Keep `max_size` at least
+1.5 × `queue_size`; that margin is bbolt overhead only. A storage that does reach its cap no longer deletes an
 item whose dispatch it cannot record; the queue retries the read instead.
 
 Do not put the `batch` processor in a role pipeline. In the pinned upstream, it
@@ -373,7 +375,7 @@ to pin. `replace` is forbidden — a version-form replacement overrides minimal
 version selection in both directions and downgrades as readily as it raises,
 reporting nothing when it does. Only a human adds one. The one a human added
 forks exporterhelper's persistent queue (size accounting, dispatch durability
-and storage compression); it sits in `builder.yaml` and in both
+and stored-byte sizing); it sits in `builder.yaml` and in both
 `internal/exporters/*/go.mod`, and its `builder.yaml` comment states why, the
 re-base on every Collector bump and the removal condition. `manifest resolve`
 rejects a replacement not based on the upstream pin or absent from an

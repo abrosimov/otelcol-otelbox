@@ -250,12 +250,12 @@ exporters:
       timeout: 10s
       permit_without_stream: true
     timeout: 10s
+    # Queue items are stored as zstd frames, and `queue_size` counts the
+    # compressed bytes an item takes on disk; see config/edge.yaml.
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/gateway
-      # Stored as zstd frames, and `queue_size` counts the compressed bytes an
-      # item takes on disk; see config/edge.yaml.
-      storage_compression: zstd
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
       sizer: bytes
       queue_size: ${env:OTELBOX_QUEUE_SIZE_BYTES:-4294967296}

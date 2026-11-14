@@ -234,7 +234,7 @@ own replay.
 
 ### Sizing the queue
 
-The queue sets `storage_compression: zstd`: every item is written to the WAL as
+The exporter sets `storage_compression: zstd`: every item is written to the WAL as
 one zstd frame, and with `sizer: bytes` both `queue_size` and the reported queue
 size count the **stored** bytes an item takes, not its uncompressed size. The
 queue and `file_storage` `max_size` are therefore in the same unit, and the
@@ -353,7 +353,11 @@ re-base rule. It carries three changes to upstream v0.164.0's persistent queue:
   crash between them loses those items (PC-13, PC-14). The fork keeps the item
   and reads it again after a second, and moves the in-flight items in one
   transaction.
-- **Storage compression.** `sending_queue::storage_compression`, described in
+- **Stored-byte sizing.** Under `sizer: bytes`, upstream counts a request
+  before encoding; the fork counts the bytes an item takes in storage. The
+  exporter wrappers in `internal/exporters/` own compression: their
+  `storage_compression: zstd` wraps the queue encoding, and this change is what
+  makes the queue bound the compressed result. See
   [sizing the queue](#sizing-the-queue).
 
 The fork goes once a Collector release contains all three.

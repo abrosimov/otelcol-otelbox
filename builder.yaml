@@ -103,9 +103,11 @@ extensions:
 # then refuses or blocks data the queue has room for. Dispatch durability:
 # upstream deletes an accepted item whose dispatch it cannot record, and moves
 # the items in flight at start-up in two transactions, so a crash between them
-# loses those items. Storage compression: `sending_queue::storage_compression`
-# stores items as zstd frames and lets `queue_size` count stored bytes, the
-# unit `file_storage` `max_size` caps. The fork is branch
+# loses those items. Stored-byte sizing: upstream's `bytes` sizer counts a
+# request before encoding, so `queue_size` and the storage's `max_size` are in
+# different units; the fork counts the bytes an item takes in storage, which is
+# what lets the wrappers' zstd encoding bound compressed bytes. The wrappers own
+# compression; the fork adds no configuration and no dependency. The fork is branch
 # `persistent_queue_size_leak` of github.com/abrosimov/opentelemetry-collector,
 # one commit per change on the core tag the `gomod` pins name; it keeps
 # upstream's module path.
@@ -118,4 +120,4 @@ extensions:
 # re-bases the branch onto the new tag and moves all three lines together.
 # Remove them once an upstream release contains all three changes.
 replaces:
-  - go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112212127-e29a212a5ddb
+  - go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261114111248-c9c8d8d5bf5a

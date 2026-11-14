@@ -338,15 +338,18 @@ exporters:
     # deployment that raises `batch.max_size` or disables compression
     # recomputes it.
     timeout: 10s
+    # Every queue item is stored as one zstd frame. The forked exporterhelper
+    # counts a persistent item at the bytes it stores, so with `sizer: bytes`
+    # the queue counts compressed bytes: the disk budget holds the uncompressed
+    # volume times the compression ratio, and `queue_size` is in the same unit
+    # as `max_size` above. A sibling of `sending_queue`, not inside it, because
+    # the wrapper owns it and that structure is upstream's. Items stored either
+    # way are read whatever it is set to.
+    storage_compression: zstd
     sending_queue:
       enabled: true
       # Bound to the WAL above, so enqueue means persisted.
       storage: file_storage/gateway
-      # Every item is stored as one zstd frame, and with `sizer: bytes` the
-      # queue counts the compressed bytes an item takes on disk. The disk budget
-      # therefore holds the uncompressed volume times the compression ratio,
-      # and `queue_size` is in the same unit as `max_size` above.
-      storage_compression: zstd
       # Two workers bound concurrency without serialising every export. The
       # deployment may raise this only together with its memory budget.
       num_consumers: ${env:OTELBOX_EXPORTER_CONSUMERS:-2}
@@ -355,7 +358,7 @@ exporters:
       # it below that cap so the overflow policy binds before a storage write
       # fails, and remember the cap applies per signal file.
       #
-      # STORED bytes under `storage_compression: zstd`: what an item takes in
+      # STORED bytes under `storage_compression: zstd` above: what an item takes in
       # the WAL, not its uncompressed size and not its size on the wire. Size the
       # queue from `otelcol_exporter_queue_size`, which reports the same unit;
       # `otelcol_exporter_enqueue_size_bytes` still counts uncompressed bytes.
@@ -429,10 +432,10 @@ exporters:
       timeout: 10s
       permit_without_stream: true
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/gateway_self
-      storage_compression: zstd
       # One worker: the self-metrics rate is a scrape every 30s and a
       # filesystem sample every 60s.
       num_consumers: 1

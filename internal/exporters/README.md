@@ -30,6 +30,14 @@ wrapper also retries `ResourceExhausted` that carries no `RetryInfo`, except
 grpc-go's refusals of a message above a size limit, recognised by their message
 like HTTP 413. Every other permanent response remains permanent.
 
+`storage_compression: zstd`, a key beside `sending_queue`, wraps the upstream
+queue encoding through `xexporterhelper.WithQueueBatch`: new items are stored
+as zstd frames, and items stored either way are read whatever the key says, so
+it can change on a queue that still holds items. The forked exporterhelper
+counts a persistent item at the bytes it stores, which is what makes
+`sizer: bytes` bound the compressed result. The codec file is identical in
+both modules; a shared local module would need a forbidden `replace`.
+
 `UPSTREAM_VERSION`, the wrapper `go.mod` files and every component pin in
 `builder.yaml` form one dependency set. `otelbox-ci manifest resolve` rejects a
 mixed set. The set includes the `replace` of exporterhelper by its
