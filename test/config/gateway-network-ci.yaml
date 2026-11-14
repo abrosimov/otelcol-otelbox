@@ -2,7 +2,8 @@
 # ordinary-signal SIGKILL test.
 #
 # It keeps the reference pipelines and persistent queues, moving only listeners
-# and the three signal exporters to controllable plaintext test endpoints.
+# and the three signal exporters, and the self-metrics one, to controllable
+# plaintext test endpoints.
 
 extensions:
   healthcheckv2:
@@ -36,6 +37,10 @@ exporters:
     tls:
       insecure: true
   otlp_grpc/traces:
+    endpoint: ${env:OTELBOX_CI_ORDINARY_ENDPOINT}
+    tls:
+      insecure: true
+  otlp_grpc/self_metrics:
     endpoint: ${env:OTELBOX_CI_ORDINARY_ENDPOINT}
     tls:
       insecure: true

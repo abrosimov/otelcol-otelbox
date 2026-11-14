@@ -102,6 +102,20 @@ extensions:
       # otherwise stay for ever.
       cleanup_on_start: true
 
+  # The WAL of this collector's own metrics, apart from the one above so that
+  # a full gateway queue cannot refuse the very points that report it: queue
+  # fill, refused admission and volume space. It holds a metrics file only.
+  file_storage/gateway_self:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/gateway_self
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_SELF_STORAGE_MAX_SIZE_BYTES:-805306368}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/gateway_self
+      cleanup_on_start: true
+
 receivers:
   # These listeners have no authentication. The absent-variable default is
   # loopback so a missed deployment value fails closed rather than exposing
@@ -139,7 +153,8 @@ receivers:
   # OTELBOX_STORAGE_DIR. These points leave through the same gateway queue they
   # warn about, so during an outage they are queued with everything else. A
   # deployment must also run an out-of-band local watcher; see
-  # docs/reference/edge.md "Capacity signals".
+  # docs/reference/edge.md "Capacity signals". They have a queue and WAL of
+  # their own, so a full main queue does not refuse them as well.
   host_metrics/storage:
     collection_interval: 60s
     scrapers:
@@ -294,11 +309,28 @@ exporters:
     # that is not this binary. `none` is a legitimate value where the transport
     # already compresses; an unknown one is refused by name at load.
     #
-    # No effect on the sizing invariants either side of it: `sizer: bytes` below
-    # measures uncompressed queue items, and the gateway's `max_recv_msg_size_mib`
-    # applies to the decompressed message, so batch < receive envelope holds
-    # whatever the codec is.
+    # No effect on the sizing invariants either side of it: the batch's
+    # `sizer: bytes` below measures uncompressed items, the queue counts its own
+    # stored zstd bytes, and the gateway's `max_recv_msg_size_mib` applies to
+    # the decompressed message, so batch < receive envelope holds whatever the
+    # codec is.
     compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
+    # A ping every 30s while the connection is idle or a request waits on it.
+    # Without it, a peer that vanishes without a reset — another Wi-Fi network,
+    # a dropped NAT or VPN mapping, a laptop that slept — leaves a dead
+    # connection, and every retry is sent down it until the kernel gives up on
+    # its retransmissions, about fifteen minutes on Linux; an attempt's timeout
+    # cancels the request, not the connection. With keepalive grpc-go also sets
+    # TCP_USER_TIMEOUT, so the connection is replaced within time + timeout.
+    #
+    # A server answers pings more frequent than its enforcement policy permits
+    # with GOAWAY `too_many_pings`. The gateway's receiver permits these; a
+    # deployment that terminates this leg on another front end sets the same
+    # policy there.
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
     # Per attempt, and DeadlineExceeded is retried: a batch that cannot cross
     # the slowest uplink within it is retried for ever and never delivered.
     # Rule: at least 3 × largest compressed batch ÷ slowest uplink. 10s covers a
@@ -306,6 +338,14 @@ exporters:
     # deployment that raises `batch.max_size` or disables compression
     # recomputes it.
     timeout: 10s
+    # Every queue item is stored as one zstd frame. The forked exporterhelper
+    # counts a persistent item at the bytes it stores, so with `sizer: bytes`
+    # the queue counts compressed bytes: the disk budget holds the uncompressed
+    # volume times the compression ratio, and `queue_size` is in the same unit
+    # as `max_size` above. A sibling of `sending_queue`, not inside it, because
+    # the wrapper owns it and that structure is upstream's. Items stored either
+    # way are read whatever it is set to.
+    storage_compression: zstd
     sending_queue:
       enabled: true
       # Bound to the WAL above, so enqueue means persisted.
@@ -318,9 +358,10 @@ exporters:
       # it below that cap so the overflow policy binds before a storage write
       # fails, and remember the cap applies per signal file.
       #
-      # UNCOMPRESSED proto bytes, before `compression` above. Size the queue
-      # from `otelcol_exporter_enqueue_size_bytes`, never from wire throughput,
-      # which zstd shrinks by an order of magnitude or more.
+      # STORED bytes under `storage_compression: zstd` above: what an item takes in
+      # the WAL, not its uncompressed size and not its size on the wire. Size the
+      # queue from `otelcol_exporter_queue_size`, which reports the same unit;
+      # `otelcol_exporter_enqueue_size_bytes` still counts uncompressed bytes.
       sizer: bytes
       # Unset would be zero, which `Validate` rejects outright — the one numeric
       # reference here that fails loudly. The default keeps it consistent with
@@ -371,8 +412,58 @@ exporters:
     retry_on_server_error:
       enabled: true
 
+  # This collector's own metrics, on a queue and WAL of their own. They are
+  # the capacity signals of the queue above, so they must still be admitted
+  # when it is full. The same gateway, credential, transport and retry policy
+  # as the exporter above; only the queue differs. Keep the two in step.
+  otlp_grpc/gateway_self:
+    endpoint: ${env:OTELBOX_UPSTREAM_ENDPOINT}
+    auth:
+      authenticator: headers_setter/gateway
+    tls:
+      insecure: false
+      cert_file: ${env:OTELBOX_UPSTREAM_TLS_CERT_FILE:-}
+      key_file: ${env:OTELBOX_UPSTREAM_TLS_KEY_FILE:-}
+      reload_interval: ${env:OTELBOX_UPSTREAM_TLS_RELOAD_INTERVAL:-1h}
+    compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
+    # As on the exporter above.
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
+    timeout: 10s
+    storage_compression: zstd
+    sending_queue:
+      enabled: true
+      storage: file_storage/gateway_self
+      # One worker: the self-metrics rate is a scrape every 30s and a
+      # filesystem sample every 60s.
+      num_consumers: 1
+      sizer: bytes
+      # Stored bytes, two thirds of the file cap above: the same 1.5 margin as
+      # the main WAL keeps.
+      queue_size: ${env:OTELBOX_SELF_QUEUE_SIZE_BYTES:-536870912}
+      # Scrapes cannot be back-pressured, as on the host agent: refusing the
+      # current scrape is better than holding it and missing the next.
+      block_on_overflow: false
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 524288
+        max_size: 1572864
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    retry_on_auth_failure:
+      enabled: true
+      interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
+    retry_on_server_error:
+      enabled: true
+
 service:
-  extensions: [healthcheckv2, headers_setter/gateway, file_storage/gateway]
+  extensions: [healthcheckv2, headers_setter/gateway, file_storage/gateway, file_storage/gateway_self]
   telemetry:
     # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
     # No `output_paths`: a second writer on the same inode interleaves lines and
@@ -416,8 +507,9 @@ service:
       processors: [memory_limiter, resource_detection, redaction/secrets]
       exporters: [otlp_grpc/gateway]
     # This collector observing itself, on the same processors as everything
-    # else: a scrape target label is an attribute too.
+    # else: a scrape target label is an attribute too. Its own queue, so that
+    # the signals reporting a full main queue are not refused by it.
     metrics/self:
       receivers: [prometheus/self, host_metrics/storage]
       processors: [memory_limiter, resource_detection, redaction/secrets]
-      exporters: [otlp_grpc/gateway]
+      exporters: [otlp_grpc/gateway_self]

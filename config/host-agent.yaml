@@ -242,7 +242,17 @@ exporters:
     # same binary, so the codec is guaranteed to be registered there. The
     # gateway's recipient exporters keep gzip.
     compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
+    # Replaces a connection that died without a reset within time + timeout
+    # instead of after the kernel's retransmission timeout; see config/edge.yaml.
+    # The gateway's receiver permits pings this frequent.
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
     timeout: 10s
+    # Queue items are stored as zstd frames, and `queue_size` counts the
+    # compressed bytes an item takes on disk; see config/edge.yaml.
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/gateway

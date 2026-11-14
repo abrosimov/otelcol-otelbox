@@ -12,7 +12,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter]
+      processors: [memory_limiter, span_dedup/traces]
       exporters: [file/sink]
     traces/selected:
       receivers: [otlp]

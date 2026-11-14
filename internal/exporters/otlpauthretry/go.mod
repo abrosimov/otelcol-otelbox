@@ -3,6 +3,7 @@ module github.com/abrosimov/otelcol-otelbox/exporter/otlpauthretry
 go 1.27.0
 
 require (
+	github.com/klauspost/compress v1.20.3
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/collector/component v1.70.0
 	go.opentelemetry.io/collector/component/componenttest v0.164.0
@@ -11,8 +12,10 @@ require (
 	go.opentelemetry.io/collector/consumer/consumererror v0.164.0
 	go.opentelemetry.io/collector/exporter v1.70.0
 	go.opentelemetry.io/collector/exporter/exporterhelper v0.164.0
+	go.opentelemetry.io/collector/exporter/exporterhelper/xexporterhelper v0.164.0
 	go.opentelemetry.io/collector/exporter/exportertest v0.164.0
 	go.opentelemetry.io/collector/exporter/otlpexporter v0.164.0
+	go.opentelemetry.io/collector/extension/xextension v0.164.0
 	go.opentelemetry.io/collector/pdata v1.70.0
 	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
@@ -34,7 +37,6 @@ require (
 	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/knadh/koanf/maps v0.1.3 // indirect
 	github.com/knadh/koanf/providers/confmap v1.0.1 // indirect
 	github.com/knadh/koanf/v2 v2.3.8 // indirect
@@ -56,12 +58,10 @@ require (
 	go.opentelemetry.io/collector/consumer/consumererror/xconsumererror v0.164.0 // indirect
 	go.opentelemetry.io/collector/consumer/consumertest v0.164.0 // indirect
 	go.opentelemetry.io/collector/consumer/xconsumer v0.164.0 // indirect
-	go.opentelemetry.io/collector/exporter/exporterhelper/xexporterhelper v0.164.0 // indirect
 	go.opentelemetry.io/collector/exporter/xexporter v0.164.0 // indirect
 	go.opentelemetry.io/collector/extension v1.70.0 // indirect
 	go.opentelemetry.io/collector/extension/extensionauth v1.70.0 // indirect
 	go.opentelemetry.io/collector/extension/extensionmiddleware v0.164.0 // indirect
-	go.opentelemetry.io/collector/extension/xextension v0.164.0 // indirect
 	go.opentelemetry.io/collector/featuregate v1.70.0 // indirect
 	go.opentelemetry.io/collector/internal/componentalias v0.164.0 // indirect
 	go.opentelemetry.io/collector/internal/statusutil v0.164.0 // indirect
@@ -88,4 +88,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261112140826-33b610adf7d3
+replace go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261114111248-c9c8d8d5bf5a

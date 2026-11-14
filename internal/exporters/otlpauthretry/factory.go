@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/xexporterhelper"
 	upstream "go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -58,7 +59,7 @@ func createTraces(ctx context.Context, settings exporter.Settings, config compon
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
 		exporterhelper.WithRetry(wrapperConfig.RetryConfig),
-		exporterhelper.WithQueue(wrapperConfig.QueueConfig),
+		xexporterhelper.WithQueueBatch(wrapperConfig.QueueConfig, queueSettings(xexporterhelper.NewTracesQueueBatchSettings(), wrapperConfig.StorageCompression)),
 		exporterhelper.WithStart(inner.Start),
 		exporterhelper.WithShutdown(inner.Shutdown),
 	)
@@ -80,7 +81,7 @@ func createMetrics(ctx context.Context, settings exporter.Settings, config compo
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
 		exporterhelper.WithRetry(wrapperConfig.RetryConfig),
-		exporterhelper.WithQueue(wrapperConfig.QueueConfig),
+		xexporterhelper.WithQueueBatch(wrapperConfig.QueueConfig, queueSettings(xexporterhelper.NewMetricsQueueBatchSettings(), wrapperConfig.StorageCompression)),
 		exporterhelper.WithStart(inner.Start),
 		exporterhelper.WithShutdown(inner.Shutdown),
 	)
@@ -102,7 +103,7 @@ func createLogs(ctx context.Context, settings exporter.Settings, config componen
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
 		exporterhelper.WithRetry(wrapperConfig.RetryConfig),
-		exporterhelper.WithQueue(wrapperConfig.QueueConfig),
+		xexporterhelper.WithQueueBatch(wrapperConfig.QueueConfig, queueSettings(xexporterhelper.NewLogsQueueBatchSettings(), wrapperConfig.StorageCompression)),
 		exporterhelper.WithStart(inner.Start),
 		exporterhelper.WithShutdown(inner.Shutdown),
 	)

@@ -22,10 +22,16 @@ type Config struct {
 	upstream.Config  `mapstructure:",squash"`
 	AuthRetry        AuthRetryConfig        `mapstructure:"retry_on_auth_failure"`
 	ServerErrorRetry ServerErrorRetryConfig `mapstructure:"retry_on_server_error"`
+	// StorageCompression compresses the items the persistent queue stores. A
+	// sibling of `sending_queue` because that structure is upstream's.
+	StorageCompression StorageCompression `mapstructure:"storage_compression"`
 }
 
 func (config *Config) Validate() error {
 	if err := config.Config.Validate(); err != nil {
+		return err
+	}
+	if err := validateStorageCompression(config.StorageCompression, config.QueueConfig); err != nil {
 		return err
 	}
 	if config.ServerErrorRetry.Enabled && !config.RetryConfig.Enabled {

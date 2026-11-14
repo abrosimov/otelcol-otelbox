@@ -447,6 +447,20 @@ func sinkContains(t *testing.T, path, needle string) bool {
 	return bytes.Contains(raw, []byte(needle))
 }
 
+// sinkCount counts the occurrences of needle in the sink.
+func sinkCount(t *testing.T, path, needle string) int {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("could not read the sink at %s: %v", path, err)
+	}
+	return bytes.Count(raw, []byte(needle))
+}
+
 func sinkTail(path string, lines int) string {
 	raw, err := os.ReadFile(path)
 	if err != nil {

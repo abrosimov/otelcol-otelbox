@@ -35,10 +35,10 @@ module that drives the built binary from outside.
 
 | Path | Purpose |
 | --- | --- |
-| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Its one `replaces` entry carries a forked exporterhelper fix; its comment states why and when it goes. |
+| `builder.yaml` | OCB manifest. `dist.version` is the only artefact-version source; `gomod` pins identify upstream. Its one `replaces` entry carries a forked exporterhelper persistent queue; its comment states why and when it goes. |
 | `renovate.json5` | Extends the fleet preset. Dependency policy lives there, not here. |
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
-| `internal/processors/spandedup/` | The `span_dedup` processor and unit tests: drops a selected-trace span the exporter queue already accepted, with its index in a storage extension. Its `go.mod` joins the dependency set `manifest resolve` checks. |
+| `internal/processors/spandedup/` | The `span_dedup` processor and unit tests: drops a span the next consumer already accepted, with its index in a storage extension or in memory alone. Its `go.mod` joins the dependency set `manifest resolve` checks. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
 | `docs/` | The documentation vault, laid out under the kadmos template and selected by the root `.vault-root`. `docs/PROJECT_AGENTS.md` states its placement rules. `reference/` holds the role, redaction and adoption notes, edited in place with the profiles; `reference/redaction.md` is the canonical redaction carrier and threat boundary. `roadmaps/` holds the roadmap and deferred tasks. |
 | `tools/ci/` | Tested Go checks for manifest resolution, shared regions, built-binary contents and OCI runtime readiness. |
@@ -110,7 +110,18 @@ it. The host agent sets it to `false` too: scrapers cannot be back-pressured, so
 blocking would lose subsequent collection cycles while retaining the current
 item. Edge and host-agent WALs protect a bounded outage and the deployment must
 alert before capacity, through an out-of-band watcher because the in-band
-signals queue behind the outage.
+signals queue behind the outage. Edge and gateway send their own metrics
+(`metrics/self`) on a separate non-blocking exporter and WAL, so a full main
+queue does not also refuse the signals that report it.
+
+Every network exporter sets `storage_compression: zstd`, a key of the
+wrappers in `internal/exporters/`: they wrap the upstream queue encoding so
+items are stored as zstd frames, and the forked exporterhelper counts a
+persistent item at the bytes it stores, so under `sizer: bytes` `queue_size`
+counts stored bytes, the unit `file_storage` `max_size` caps. The wrappers own
+the zstd dependency; exporterhelper takes none. Keep `max_size` at least
+1.5 × `queue_size`; that margin is bbolt overhead only. A storage that does reach its cap no longer deletes an
+item whose dispatch it cannot record; the queue retries the read instead.
 
 Do not put the `batch` processor in a role pipeline. In the pinned upstream, it
 sends into an internal channel and returns success; a later downstream failure
@@ -166,6 +177,14 @@ the material it started with — the pair is polled and re-read at the next
 handshake, not watched by fsnotify as the header file is. The gateway profile is unchanged: mTLS
 terminates on whatever front end a deployment puts before it.
 
+Edge and host agent ping the gateway every 30 s (`keepalive` on their
+exporters, `permit_without_stream: true`), so a connection that died without a
+reset is replaced within 40 s rather than after the kernel's retransmission
+timeout; an attempt's `timeout` cancels the request, not the connection. The
+gateway's gRPC receiver permits that through `keepalive.enforcement_policy`
+(`min_time: 10s`); without it grpc-go answers with GOAWAY `too_many_pings`.
+Recipient exporters set no keepalive, because their peer's policy is unknown.
+
 Edge and host agent compress the gateway leg with `zstd` through
 `OTELBOX_UPSTREAM_COMPRESSION`. That choice is scoped to legs whose far end is
 this same binary: a gRPC client may only select a codec registered in the server
@@ -175,8 +194,9 @@ peer is a third-party backend, and a change there needs that backend's own
 evidence. An unrecognised codec is refused by name at load. Compression level is
 not configurable because the persistent-queue wrapper in `internal/exporters/`
 does not carry `compression_params`. The codec is orthogonal to the sizing
-invariants: `sizer: bytes` counts uncompressed queue items and
-`max_recv_msg_size_mib` bounds the decompressed message.
+invariants: the sender batch counts uncompressed bytes, the queue counts its
+own stored zstd bytes and `max_recv_msg_size_mib` bounds the decompressed
+message.
 
 Changing either authenticator, file format, header, receiver `auth:` block or
 TLS overlay requires the full harness. A process and `/status` can remain green
@@ -210,6 +230,11 @@ gateway's `span_dedup/selected_traces` removes replays and upstream re-sends
 before the selected-traces queue, never that queue's own resend. Its
 invariant is that a span is remembered only after the next consumer accepted
 it; `TestSelectedTraceRefusedByAFullQueueIsNotRemembered` guards it.
+`span_dedup/traces`, in memory only, removes the copies fan-out makes on the
+ordinary trace branch while a request is retried against a full
+selected-traces queue; `TestGatewayRetriedMixedRequestReachesTheOrdinaryRecipientOnce`
+guards it. A span seen again is refreshed, so retention counts from its last
+arrival.
 
 ## Redaction boundary
 
@@ -349,7 +374,8 @@ graph. A transitive dependency of an upstream component is not this repository's
 to pin. `replace` is forbidden — a version-form replacement overrides minimal
 version selection in both directions and downgrades as readily as it raises,
 reporting nothing when it does. Only a human adds one. The one a human added
-forks exporterhelper's persistent queue; it sits in `builder.yaml` and in both
+forks exporterhelper's persistent queue (size accounting, dispatch durability
+and stored-byte sizing); it sits in `builder.yaml` and in both
 `internal/exporters/*/go.mod`, and its `builder.yaml` comment states why, the
 re-base on every Collector bump and the removal condition. `manifest resolve`
 rejects a replacement not based on the upstream pin or absent from an
