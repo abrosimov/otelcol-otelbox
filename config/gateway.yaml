@@ -162,8 +162,19 @@ receivers:
         endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:14320
         max_request_body_size: 2097152
         read_header_timeout: 10s
-        read_timeout: 30s
-        write_timeout: 30s
+        # Zero: no limit, deliberately, on both. A body still arriving at
+        # `read_timeout` is answered with HTTP 400, which an OTLP SDK treats as
+        # permanent and drops — a 2 MiB request on a slow link is not a bad
+        # request. A request whose enqueue waits past `write_timeout` on a full
+        # blocking queue is persisted but its 200 is never written, so the
+        # producer sends it again. The handler still ends when the client
+        # disconnects, which cancels a waiting enqueue before it persists.
+        # Without them a slow client holds a goroutine and at most one
+        # 2 MiB body; limiting connections and their rate belongs to the
+        # deployment's front end. `confighttp` defaults `write_timeout` to 30s,
+        # so both are stated rather than omitted.
+        read_timeout: 0s
+        write_timeout: 0s
         idle_timeout: 1m
         auth:
           authenticator: bearertokenauth/ingest
@@ -314,6 +325,15 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    # The upstream exporters also call a refusal of the route or the recipient
+    # permanent — HTTP 404, 405, 408 and most other 4xx, gRPC NotFound,
+    # FailedPrecondition and Unimplemented — and drop admitted data on it, for
+    # example while an ingress is mid-rollout. Retry those as well. A refusal
+    # of the payload itself (HTTP 400, 409, 413, 422, gRPC InvalidArgument,
+    # AlreadyExists, an oversized message) stays permanent, so one bad item
+    # cannot pin the queue.
+    retry_on_client_error:
+      enabled: true
 
   otlp_grpc/metrics:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
@@ -349,6 +369,8 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    retry_on_client_error:
+      enabled: true
 
   otlp_grpc/traces:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
@@ -383,6 +405,8 @@ exporters:
     # above instead. A recipient that fails deterministically then holds its
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
+      enabled: true
+    retry_on_client_error:
       enabled: true
 
   # `otlp_http` is the canonical v0.158 type. The endpoint is an OTLP base URL;
@@ -421,6 +445,8 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    retry_on_client_error:
+      enabled: true
 
   # This collector's own metrics, to the all-signal recipient on a queue of
   # their own, so that a full metrics queue does not refuse them. Not blocking:
@@ -451,6 +477,8 @@ exporters:
       enabled: true
       interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
     retry_on_server_error:
+      enabled: true
+    retry_on_client_error:
       enabled: true
 
 service:

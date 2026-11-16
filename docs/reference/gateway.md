@@ -163,7 +163,7 @@ each recipient and signal, estimate:
 
 ```text
 queue bytes >= peak stored bytes/second * required outage seconds * safety factor
-storage max_size >= queue bytes * 1.5
+storage max_size >= max(queue bytes * 1.5, queue bytes + 256 MiB)
 ```
 
 Every queue sets `storage_compression: zstd`, so queue bytes are the
@@ -217,6 +217,16 @@ client, replace it with a freshly generated non-client revocation token; do not
 truncate the file. The harness proves that replacement activates the new token
 and rejects the previous one.
 
+The OTLP/HTTP listener has no read or write timeout. A read timeout answers a
+body that is still arriving with HTTP 400, which an OTLP SDK treats as
+permanent: a 2 MiB request over a link slower than about 70 kB/s was dropped.
+A write timeout lets an enqueue that waits on a full blocking queue persist
+after the response can no longer be written, so the producer sees a broken
+connection and sends again. The handler still ends when the client
+disconnects, which cancels a waiting enqueue. A slow client therefore holds a
+goroutine and at most one 2 MiB body; limit connections and their rate at the
+deployment's front end.
+
 Inbound TLS termination belongs to the deployment. A bearer token must never
 cross an unencrypted network.
 
@@ -239,7 +249,12 @@ gRPC `Internal` or `Unknown`) and a gRPC `ResourceExhausted` without
 `retry_on_server_error`; a recipient that fails every attempt therefore holds
 its queue, and the queue-fill alert is what reports it. A `ResourceExhausted`
 that refuses a message as too large stays permanent, as HTTP 413 does, because
-the same batch would be refused on every attempt. This is at-least-once delivery: a lost
+the same batch would be refused on every attempt. Through
+`retry_on_client_error`, a refusal of the route or the recipient rather than
+the payload is retried too: every HTTP 4xx except 400, 409, 413 and 422 (and
+401/403, handled above), and gRPC `NotFound`, `FailedPrecondition` and
+`Unimplemented`. An ingress mid-rollout answering 404 therefore holds the
+queue instead of losing the batch. This is at-least-once delivery: a lost
 success response may produce a duplicate at the recipient.
 
 An HTTP recipient that answers 429 or 503 with `Retry-After` is not sent the
@@ -344,7 +359,7 @@ Closing it needs recipient-side idempotency on the span identity.
 | Endpoint | Purpose |
 | --- | --- |
 | `${OTELBOX_BIND_HOST}:14319` | Authenticated OTLP/gRPC ingest, up to 2 MiB per message. |
-| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 2 MiB per request; 10 s header, 30 s read/write and 1 min idle timeouts. |
+| `${OTELBOX_BIND_HOST}:14320` | Authenticated OTLP/HTTP ingest, up to 2 MiB per request; 10 s header and 1 min idle timeouts, no read or write timeout (see below). |
 | `${OTELBOX_BIND_HOST}:8889/metrics` | Detailed Collector metrics and self-scrape target. |
 | `${OTELBOX_HEALTH_ENDPOINT}/status` | Lifecycle health only; full queues and rejected exports do not make it unhealthy. |
 

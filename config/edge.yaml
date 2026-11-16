@@ -411,6 +411,15 @@ exporters:
     # permanent.
     retry_on_server_error:
       enabled: true
+    # The upstream exporters also call a refusal of the route or the recipient
+    # permanent — HTTP 404, 405, 408 and most other 4xx, gRPC NotFound,
+    # FailedPrecondition and Unimplemented — and drop admitted data on it, for
+    # example while an ingress is mid-rollout. Retry those as well. A refusal
+    # of the payload itself (HTTP 400, 409, 413, 422, gRPC InvalidArgument,
+    # AlreadyExists, an oversized message) stays permanent, so one bad item
+    # cannot pin the queue.
+    retry_on_client_error:
+      enabled: true
 
   # This collector's own metrics, on a queue and WAL of their own. They are
   # the capacity signals of the queue above, so they must still be admitted
@@ -460,6 +469,8 @@ exporters:
       enabled: true
       interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
     retry_on_server_error:
+      enabled: true
+    retry_on_client_error:
       enabled: true
 
 service:

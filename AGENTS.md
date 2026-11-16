@@ -120,8 +120,15 @@ items are stored as zstd frames, and the forked exporterhelper counts a
 persistent item at the bytes it stores, so under `sizer: bytes` `queue_size`
 counts stored bytes, the unit `file_storage` `max_size` caps. The wrappers own
 the zstd dependency; exporterhelper takes none. Keep `max_size` at least
-1.5 × `queue_size`; that margin is bbolt overhead only. A storage that does reach its cap no longer deletes an
-item whose dispatch it cannot record; the queue retries the read instead.
+max(1.5 × `queue_size`, `queue_size` + 256 MiB). The relative margin covers
+bbolt overhead; the absolute one covers bbolt's 16 MiB growth step and the
+multi-MiB contiguous runs that rewriting the queue metadata needs, because the
+metadata key shares B-tree leaves with large items. A storage at its cap no
+longer deletes an item whose dispatch it cannot record, but reads and deletes
+then fail until space returns, so the queue stalls: the cap is a stall, not a
+loss, and the margin exists to keep the queue, not the storage, refusing first.
+Keep each `compaction.directory` on the WAL's own filesystem: across devices
+filestorage falls back to truncate-and-copy without fsync.
 
 Do not put the `batch` processor in a role pipeline. In the pinned upstream, it
 sends into an internal channel and returns success; a later downstream failure
@@ -219,9 +226,23 @@ wrapper reads the status code from the upstream error message, which
 gRPC wrapper keeps grpc-go's message-size refusals permanent by their message,
 which `TestClassifyResourceExhaustedReadsTheUpstreamStatus` holds. A recipient
 that fails deterministically holds its queue until the deployment's queue alert
-fires. Other permanent errors, such as HTTP 400 or 413 and an oversized gRPC
-message, remain permanent so an invalid payload cannot pin a queue forever.
-`TestRecipientHTTP500IsRetriedUntilDelivered` is the regression guard.
+fires. Every outbound exporter also enables `retry_on_client_error`: the pinned
+exporters call every other HTTP 4xx except 429, and gRPC `NotFound`,
+`FailedPrecondition` and `Unimplemented`, permanent, so an ingress answering
+404 or 408 mid-rollout dropped admitted data. Those describe the route or the
+recipient, not the payload, and return to the ordinary backoff. Refusals of
+the payload itself — HTTP 400, 409, 413 and 422, gRPC `InvalidArgument` and
+`AlreadyExists`, and an oversized gRPC message — remain permanent so an invalid
+payload cannot pin a queue forever. `TestRecipientHTTP500IsRetriedUntilDelivered`
+and `TestRecipientRouteRefusalIsRetriedUntilDelivered` are the regression
+guards.
+
+The gateway's OTLP/HTTP listener sets `read_timeout` and `write_timeout` to
+zero. A body still arriving at a read timeout is answered with HTTP 400, which
+an SDK drops; an enqueue that waits past a write timeout persists but is never
+acknowledged. `TestGatewayHTTPIngressWaitsForASlowBody` and
+`TestGatewayHTTPIngressAcknowledgesALateEnqueue` hold both; bounding slow
+clients belongs to the deployment's front end.
 
 Delivery is at least once. If a recipient accepts a request but its success
 response is lost, retry can duplicate it; exactly-once delivery requires a

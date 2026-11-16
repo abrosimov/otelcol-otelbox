@@ -285,6 +285,15 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    # The upstream exporters also call a refusal of the route or the recipient
+    # permanent — HTTP 404, 405, 408 and most other 4xx, gRPC NotFound,
+    # FailedPrecondition and Unimplemented — and drop admitted data on it, for
+    # example while an ingress is mid-rollout. Retry those as well. A refusal
+    # of the payload itself (HTTP 400, 409, 413, 422, gRPC InvalidArgument,
+    # AlreadyExists, an oversized message) stays permanent, so one bad item
+    # cannot pin the queue.
+    retry_on_client_error:
+      enabled: true
 
 service:
   extensions:

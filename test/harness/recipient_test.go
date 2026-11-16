@@ -182,6 +182,38 @@ func TestRecipientHTTP500IsRetriedUntilDelivered(t *testing.T) {
 	}
 }
 
+// TestRecipientRouteRefusalIsRetriedUntilDelivered holds retry_on_client_error:
+// the pinned otlphttp exporter calls every 4xx except 429 permanent, so an
+// ingress answering 404 mid-rollout, or 408, dropped an admitted record. Those
+// describe the route, not the payload, and are now retried until delivered.
+func TestRecipientRouteRefusalIsRetriedUntilDelivered(t *testing.T) {
+	for _, refusal := range []int{http.StatusNotFound, http.StatusRequestTimeout} {
+		t.Run(strconv.Itoa(refusal), func(t *testing.T) {
+			scenario := startRecipientScenario(t, "gateway-recipient-"+strconv.Itoa(refusal), nil)
+			defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
+
+			marker := "otelbox-ci-recipient-" + strconv.Itoa(refusal) + "-" + randomHex(t, 8)
+			var answered atomic.Bool
+			scenario.backend.setReply(func([]byte) backendReply {
+				if answered.Swap(true) {
+					return backendReply{status: http.StatusOK}
+				}
+				return backendReply{status: refusal, body: []byte("ci route not ready")}
+			})
+			scenario.postSelected(t, marker)
+
+			if err := poll(deliveryTimeout, scenario.gateway, "the gateway to send "+marker+" again after HTTP "+strconv.Itoa(refusal), func() bool {
+				return scenario.backend.count(marker) >= 2
+			}); err != nil {
+				t.Fatalf("the recipient answered HTTP %d once and the gateway never sent the admitted trace again: %v", refusal, err)
+			}
+			if line := scenario.gateway.firstLogLine("Dropping data"); line != "" {
+				t.Fatalf("the gateway dropped data after HTTP %d: %s", refusal, line)
+			}
+		})
+	}
+}
+
 // TestRecipientPartialSuccessCountsAsDelivered pins PC-08: a partial-success
 // response is logged and counted as sent, and the rejected span is not
 // retried.

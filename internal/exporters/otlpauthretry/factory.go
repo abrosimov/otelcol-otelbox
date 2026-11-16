@@ -54,7 +54,7 @@ func createTraces(ctx context.Context, settings exporter.Settings, config compon
 		settings,
 		config,
 		func(ctx context.Context, traces ptrace.Traces) error {
-			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
+			return classifyError(inner.ConsumeTraces(ctx, traces), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry, wrapperConfig.ClientErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -76,7 +76,7 @@ func createMetrics(ctx context.Context, settings exporter.Settings, config compo
 		settings,
 		config,
 		func(ctx context.Context, metrics pmetric.Metrics) error {
-			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
+			return classifyError(inner.ConsumeMetrics(ctx, metrics), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry, wrapperConfig.ClientErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -98,7 +98,7 @@ func createLogs(ctx context.Context, settings exporter.Settings, config componen
 		settings,
 		config,
 		func(ctx context.Context, logs plog.Logs) error {
-			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry)
+			return classifyError(inner.ConsumeLogs(ctx, logs), wrapperConfig.AuthRetry, wrapperConfig.ServerErrorRetry, wrapperConfig.ClientErrorRetry)
 		},
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(wrapperConfig.TimeoutConfig),
@@ -127,10 +127,13 @@ func innerSettings(settings exporter.Settings) exporter.Settings {
 // classifyError reclassifies the upstream exporter's permanent errors that
 // this wrapper retries: authentication failures after a long throttle, and
 // server errors (`Internal`, `Unknown`) and `ResourceExhausted` without
-// `RetryInfo` through the ordinary retry backoff. A `ResourceExhausted` that
-// refuses an oversized message stays permanent. Every other error is returned
-// unchanged.
-func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerErrorRetryConfig) error {
+// `RetryInfo` through the ordinary retry backoff; and, with
+// `retry_on_client_error`, `NotFound`, `FailedPrecondition` and
+// `Unimplemented`, which describe the route rather than the payload. A
+// `ResourceExhausted` that refuses an oversized message stays permanent, as do
+// `InvalidArgument` (the payload) and `AlreadyExists` (already stored). Every
+// other error is returned unchanged.
+func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerErrorRetryConfig, clientRetry ClientErrorRetryConfig) error {
 	if err == nil {
 		return err
 	}
@@ -145,6 +148,13 @@ func classifyError(err error, authRetry AuthRetryConfig, serverRetry ServerError
 		}
 	case codes.Internal, codes.Unknown:
 		if serverRetry.Enabled {
+			return grpcStatus.Err()
+		}
+	case codes.NotFound, codes.FailedPrecondition, codes.Unimplemented:
+		// The route or the recipient, not the payload: a proxy without the
+		// service, an ingress mid-rollout, a recipient not ready. The same
+		// request can succeed later, so dropping it would lose admitted data.
+		if clientRetry.Enabled && consumererror.IsPermanent(err) {
 			return grpcStatus.Err()
 		}
 	case codes.ResourceExhausted:

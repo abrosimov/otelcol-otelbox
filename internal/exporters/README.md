@@ -3,7 +3,7 @@
 The two modules in this directory wrap the unmodified standard OTLP gRPC and
 HTTP exporters. They preserve the canonical component types `otlp_grpc` and
 `otlp_http` and the existing profile configuration, including
-`retry_on_auth_failure` and `retry_on_server_error`.
+`retry_on_auth_failure`, `retry_on_server_error` and `retry_on_client_error`.
 
 Each wrapper creates two layers:
 
@@ -28,7 +28,11 @@ HTTP 5xx, whose status code the HTTP wrapper reads from the upstream error
 message because upstream maps every unnamed status to `Unknown`. The gRPC
 wrapper also retries `ResourceExhausted` that carries no `RetryInfo`, except
 grpc-go's refusals of a message above a size limit, recognised by their message
-like HTTP 413. Every other permanent response remains permanent.
+like HTTP 413. With `retry_on_client_error`, it retries refusals of the route
+or the recipient rather than the payload: every HTTP 4xx except 400, 409, 413
+and 422 (401 and 403 belong to authentication), read from the same upstream
+message, and gRPC `NotFound`, `FailedPrecondition` and `Unimplemented`. Every
+other permanent response remains permanent.
 
 `storage_compression: zstd`, a key beside `sending_queue`, wraps the upstream
 queue encoding through `xexporterhelper.WithQueueBatch`: new items are stored

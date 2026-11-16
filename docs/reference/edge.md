@@ -322,7 +322,7 @@ Check a rendered deployment against every row:
 | Edge receiver limit (`max_recv_msg_size_mib`, `max_request_body_size`) ≤ `batch.max_size` | 1 MiB ≤ 1.5 MiB | A record above `max_size` is dropped after acknowledgement. |
 | `batch.max_size` < gateway `max_recv_msg_size_mib` ≤ gateway `max_request_body_size` | 1.5 MiB < 2 MiB ≤ 2 MiB | The gateway refuses an oversized batch, permanently. |
 | `queue_size` ≥ outage budget + (`num_consumers` + 2) × max(`batch.max_size`, receiver limit) | 4 GiB ≥ budget + 6 MiB | In-flight items hold queue capacity until sent. Budget and queue in stored bytes. |
-| `file_storage` `max_size` ≥ 1.5 × `queue_size`, per signal | 6 GiB ≥ 1.5 × 4 GiB | Below. Both are stored bytes, so the margin covers bbolt overhead only, not a compression ratio. |
+| `file_storage` `max_size` ≥ max(1.5 × `queue_size`, `queue_size` + 256 MiB), per signal | 6 GiB ≥ 6 GiB | Below. Both are stored bytes, so neither margin is a compression ratio. |
 | `timeout` ≥ 3 × largest compressed batch ÷ slowest uplink | 10 s ≥ 9.4 s | A batch that cannot cross the uplink within one attempt is never delivered. |
 
 The storage rule exists so that the queue, not the storage, is what refuses
@@ -334,8 +334,28 @@ the read side too: the queue no longer deletes an item whose dispatch it cannot
 record ([PC-13](../research/problem-cards/PC-13-read-side-storage-failure-drops-acknowledged-item.md),
 resolved in [the outage review](../research/network-outage-loss-review.md)),
 but it stops draining until finished items free space, so the full storage is
-still a stall. 1.5 is a margin for that overhead, not a measured bound; keep it,
-and keep the volume itself larger than every signal's `max_size` together.
+still a stall.
+
+Two margins apply, and the larger one binds:
+
+- **Relative, 1.5.** The overhead above, which grows with the queue. It is a
+  margin, not a measured bound.
+- **Absolute, 256 MiB.** bbolt refuses to grow once the file would pass
+  `max_size` minus its 16 MiB growth step, and the queue rewrites its metadata
+  on every read and delete. That key shares B-tree leaves with large items, so
+  each rewrite needs a contiguous run of several MiB that a fragmented file may
+  not have. A simulation of the queue's transactions on bbolt v1.5.0 stalled
+  permanently at `max_size` 96 and 128 MiB with a 1.5 ratio and items up to
+  1.5 MiB, left delivered items orphaned at 192 MiB, and stayed clean at
+  768 MiB. 256 MiB of slack is the margin that held, not a proven bound; items
+  are stored compressed, which lowers the risk further. It matters only to a
+  deployment that lowers a `*_MAX_SIZE_BYTES`: every reference default keeps
+  at least 256 MiB.
+
+Keep the volume itself larger than every signal's `max_size` together, and
+keep `compaction.directory` on the WAL's filesystem, as the profile does:
+across devices filestorage replaces the WAL by truncate-and-copy without
+fsync, which a crash can leave empty.
 
 ### The forked persistent queue
 
