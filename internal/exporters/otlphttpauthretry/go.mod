@@ -91,4 +91,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261114111248-c9c8d8d5bf5a
+replace go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261117111828-a63a99179e69

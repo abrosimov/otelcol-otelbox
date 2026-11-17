@@ -371,8 +371,9 @@ re-base rule. It carries three changes to upstream v0.164.0's persistent queue:
 - **Dispatch durability.** Upstream deletes an item whose dispatch it cannot
   record, and moves the items in flight at start-up in two transactions, so a
   crash between them loses those items (PC-13, PC-14). The fork keeps the item
-  and reads it again after a second, and moves the in-flight items in one
-  transaction.
+  and reads it again after a second, and copies each in-flight item to the back
+  of the queue before deleting its original, so a crash or a failed write there
+  costs a duplicate, not the item.
 - **Stored-byte sizing.** Under `sizer: bytes`, upstream counts a request
   before encoding; the fork counts the bytes an item takes in storage. The
   exporter wrappers in `internal/exporters/` own compression: their

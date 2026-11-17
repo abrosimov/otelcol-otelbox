@@ -102,8 +102,8 @@ extensions:
 # during a long backend outage the leaked size fills the capacity check, which
 # then refuses or blocks data the queue has room for. Dispatch durability:
 # upstream deletes an accepted item whose dispatch it cannot record, and moves
-# the items in flight at start-up in two transactions, so a crash between them
-# loses those items. Stored-byte sizing: upstream's `bytes` sizer counts a
+# the items in flight at start-up by deleting them before re-adding them, so a
+# crash between the two loses those items; the fork copies before it deletes. Stored-byte sizing: upstream's `bytes` sizer counts a
 # request before encoding, so `queue_size` and the storage's `max_size` are in
 # different units; the fork counts the bytes an item takes in storage, which is
 # what lets the wrappers' zstd encoding bound compressed bytes. The wrappers own
@@ -120,4 +120,4 @@ extensions:
 # re-bases the branch onto the new tag and moves all three lines together.
 # Remove them once an upstream release contains all three changes.
 replaces:
-  - go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261114111248-c9c8d8d5bf5a
+  - go.opentelemetry.io/collector/exporter/exporterhelper => github.com/abrosimov/opentelemetry-collector/exporter/exporterhelper v0.164.1-0.20261117111828-a63a99179e69

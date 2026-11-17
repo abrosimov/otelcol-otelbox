@@ -13,7 +13,7 @@ status: active
 authorship: agent
 assistant: Claude Code
 source_refs:
-  - "go.opentelemetry.io/collector/exporter/exporterhelper (fork, abrosimov/opentelemetry-collector@7177302) internal/queue, internal/queuebatch"
+  - "go.opentelemetry.io/collector/exporter/exporterhelper (fork, abrosimov/opentelemetry-collector@a63a99179e69) internal/queue, internal/queuebatch"
   - "go.opentelemetry.io/collector/receiver/otlpreceiver@v0.164.0 internal/trace/otlphttp.go, errors.go"
   - "go.opentelemetry.io/collector/exporter/otlphttpexporter@v0.164.0 otlp.go"
   - "github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage@v0.164.1 client.go, extension.go"

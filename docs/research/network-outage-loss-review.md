@@ -13,7 +13,7 @@ status: active
 authorship: agent
 assistant: Claude Code
 source_refs:
-  - "github.com/abrosimov/opentelemetry-collector@c9c8d8d5bf5a exporter/exporterhelper/internal/queue/persistent_queue.go"
+  - "github.com/abrosimov/opentelemetry-collector@a63a99179e69 exporter/exporterhelper/internal/queue/persistent_queue.go"
   - "internal/exporters/otlpauthretry/storage_compression.go"
   - "go.opentelemetry.io/collector/exporter/otlpexporter@v0.164.0 factory.go"
   - "google.golang.org/grpc@v1.85.0 internal/transport/http2_client.go"
@@ -65,19 +65,25 @@ longer loses data.
 - **What this proves:** the read-side counterexample of PC-13 is closed in the
   linked binary. Upstream is unchanged until the fork's change is accepted.
 
-### Finding 03 — The start-up move of in-flight items is one transaction
+### Finding 03 — The start-up move of in-flight items copies before it deletes
 
-Upstream deleted and re-added in-flight items in separate transactions
-([PC-14](problem-cards/PC-14-restart-re-enqueue-window.md)). The fork copies
-their stored values, deletes the old keys and writes the metadata in one batch;
-a failure leaves them for the next start.
+Upstream deleted in-flight items and then re-added them one by one
+([PC-14](problem-cards/PC-14-restart-re-enqueue-window.md)), so a crash or a
+failed write in between lost them. The fork re-adds each item first, keeps the
+originals listed as dispatched, and deletes an original only once its copy is
+stored. A crash or a failed copy or clean-up leaves the originals to be moved
+again at the next start.
 
 ### Evidence
 
-- **Claim:** the move is atomic.
+- **Claim:** no failure during the move loses an item; at worst it duplicates
+  one.
 - **Proof:** fork `persistent_queue.go`, `enqueueNotDispatchedReqs`;
-  `TestPersistentQueue_FailedRequeueOnStartKeepsItems`.
-- **What this proves:** a crash during start-up no longer loses in-flight items.
+  `TestPersistentQueue_FailedRequeueOnStartKeepsItems`,
+  `TestPersistentQueue_FailedRequeueCleanupDuplicatesInsteadOfLosing`.
+- **What this proves:** a crash during start-up no longer loses in-flight
+  items. One transaction would also avoid the duplicate; copying first was
+  chosen because it changes far less of upstream's code.
 
 ### Finding 04 — Without keepalive a silent break holds a dead connection
 
