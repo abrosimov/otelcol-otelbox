@@ -175,7 +175,8 @@ receivers:
         # so both are stated rather than omitted.
         read_timeout: 0s
         write_timeout: 0s
-        idle_timeout: 1m
+        keepalive:
+          idle_timeout: 1m
         auth:
           authenticator: bearertokenauth/ingest
 

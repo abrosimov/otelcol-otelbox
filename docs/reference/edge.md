@@ -359,10 +359,11 @@ fsync, which a crash can leave empty.
 
 ### The forked persistent queue
 
-The binary and the wrapper tests build exporterhelper from a fork of
+The binary and the wrapper tests build exporterhelper from the fork branch
+`persistent_queue_dispatch_durability_v0.165.0` of
 [abrosimov/opentelemetry-collector](https://github.com/abrosimov/opentelemetry-collector),
 through the one `replaces` entry in `builder.yaml`, whose comment carries the
-re-base rule. It carries three changes to upstream v0.164.0's persistent queue:
+re-base rule. It carries three changes to upstream v0.165.0's persistent queue:
 
 - **Size accounting.** Upstream keeps the size of a put that failed to persist,
   and of a request dropped on read or on re-queue at start-up, counted. Over a
