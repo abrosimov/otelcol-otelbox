@@ -317,12 +317,12 @@ volume itself larger than every signal's `max_size` together.
 
 ### Queue size accounting
 
-Upstream exporterhelper v0.164.0 leaks the persistent queue's size counters: a
+Upstream exporterhelper v0.165.0 leaks the persistent queue's size counters: a
 put that fails to persist keeps its size counted, and a request dropped on read
 or on re-queue at start-up never releases its size. Over a long outage the
 leaked size fills `queue_size`, and the queue refuses data it has room for.
 The binary and the wrapper tests therefore build exporterhelper from the fork
-branch `persistent_queue_size_leak` of
+branch `persistent_queue_size_leak_v0.165.0` of
 [abrosimov/opentelemetry-collector](https://github.com/abrosimov/opentelemetry-collector),
 through the one `replaces` entry in `builder.yaml`, whose comment carries the
 re-base rule. The fork goes once a Collector release contains the fix.
