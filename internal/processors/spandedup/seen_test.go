@@ -135,3 +135,76 @@ func TestSegmentEncodingRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, original, decoded)
 }
+
+func copiesOf(seen *seenSet, key spanKey) int {
+	copies := 0
+	for _, kept := range seen.segments {
+		for _, candidate := range kept.keys {
+			if candidate == key {
+				copies++
+			}
+		}
+	}
+	return copies
+}
+
+func TestSeenSetRefreshKeepsARepeatedKeyBeyondSizeEviction(t *testing.T) {
+	const maxEntries = 640
+	client := newMemoryClient()
+	seen := loadForTest(t, client, time.Hour, maxEntries)
+	stuck := testKey(60000)
+	require.NoError(t, seen.record(context.Background(), []spanKey{stuck}, epoch))
+
+	// Fresh traffic would evict the key many times over; it is seen again after every batch.
+	for batch := range 100 {
+		require.NoError(t, seen.record(context.Background(), testKeys(batch*50, batch*50+50), epoch))
+		require.True(t, seen.contains(stuck), "batch %d evicted a key that is still being re-sent", batch)
+		seen.refresh(stuck, epoch)
+		require.NoError(t, seen.commit(context.Background(), epoch))
+		// One copy per half of the index, plus the one being replaced.
+		require.LessOrEqual(t, copiesOf(seen, stuck), 4, "refresh must not copy a key into every segment")
+	}
+	require.LessOrEqual(t, len(seen.index), maxEntries)
+
+	reloaded := loadForTest(t, client.reopen(), time.Hour, maxEntries)
+	require.True(t, reloaded.contains(stuck), "a refreshed key must be persisted")
+}
+
+func TestSeenSetRefreshKeepsARepeatedKeyBeyondItsFirstTTL(t *testing.T) {
+	const ttl = 16 * time.Hour
+	seen := loadForTest(t, newMemoryClient(), ttl, 1000)
+	stuck := testKey(1)
+	require.NoError(t, seen.record(context.Background(), []spanKey{stuck}, epoch))
+
+	for hour := 1; hour <= 48; hour++ {
+		now := epoch.Add(time.Duration(hour) * time.Hour)
+		require.NoError(t, seen.record(context.Background(), testKeys(1000+hour, 1001+hour), now))
+		require.True(t, seen.contains(stuck), "hour %d expired a key that is still being re-sent", hour)
+		seen.refresh(stuck, now)
+		require.NoError(t, seen.commit(context.Background(), now))
+	}
+
+	// Once it stops arriving, it expires as any other key.
+	later := epoch.Add(48*time.Hour + ttl + ttl/rotationsPerTTL + time.Second)
+	require.NoError(t, seen.record(context.Background(), testKeys(2000, 2001), later))
+	require.False(t, seen.contains(stuck))
+}
+
+func TestSeenSetRefreshLeavesNewerKeysInPlace(t *testing.T) {
+	seen := loadForTest(t, newMemoryClient(), time.Hour, 640)
+	require.NoError(t, seen.record(context.Background(), testKeys(0, 100), epoch))
+	newest := testKey(99)
+	require.False(t, seen.refresh(newest, epoch))
+	require.Equal(t, 1, copiesOf(seen, newest))
+	require.True(t, seen.refresh(testKey(0), epoch))
+	require.False(t, seen.refresh(testKey(0), epoch), "a key just refreshed sits in the open segment")
+}
+
+func TestSeenSetWithoutStorageKeepsEntriesInMemory(t *testing.T) {
+	seen := newSeenSet(nil, time.Hour, 640)
+	require.NoError(t, seen.record(context.Background(), testKeys(0, 1000), epoch))
+	require.True(t, seen.contains(testKey(999)))
+	require.LessOrEqual(t, len(seen.index), 640)
+	require.Empty(t, seen.dirty)
+	require.Empty(t, seen.deleted)
+}

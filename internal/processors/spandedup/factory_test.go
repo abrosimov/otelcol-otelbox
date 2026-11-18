@@ -7,14 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDefaultConfigRequiresOnlyStorage(t *testing.T) {
+func TestDefaultConfigIsValidWithAndWithoutStorage(t *testing.T) {
 	factory := NewFactory()
 	config := factory.CreateDefaultConfig().(*Config)
 
 	require.Equal(t, "span_dedup", factory.Type().String())
 	require.Equal(t, 72*time.Hour, config.TTL)
 	require.Equal(t, 500_000, config.MaxEntries)
-	require.ErrorContains(t, config.Validate(), `"storage"`)
+	require.NoError(t, config.Validate(), "without storage the index is kept in memory")
 	config.Storage = storageID
 	require.NoError(t, config.Validate())
 }

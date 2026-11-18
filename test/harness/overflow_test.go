@@ -107,9 +107,12 @@ func TestEdgeRefusesAtFullQueueWithARetryableStatus(t *testing.T) {
 	}
 
 	t.Run("gRPC refusal is Unavailable", func(t *testing.T) {
+		// Half as large again as the refused record. The queue counts stored, compressed bytes, and random payloads
+		// of one size compress to slightly different sizes, so a probe of the same size can fit the space the
+		// refused record just missed. A larger one cannot, and still sits under the 1 MiB receiver limit.
 		started := time.Now()
 		status, detail, err := grpcExport(edgeGRPCPort, grpcLogsMethod, "",
-			grpcLogsMessage(runID+"-grpc", randomHex(t, overflowBodyBytes/2)))
+			grpcLogsMessage(runID+"-grpc", randomHex(t, overflowBodyBytes*3/4)))
 		elapsed := time.Since(started)
 		switch {
 		case err != nil:

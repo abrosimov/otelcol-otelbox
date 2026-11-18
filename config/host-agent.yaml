@@ -242,7 +242,17 @@ exporters:
     # same binary, so the codec is guaranteed to be registered there. The
     # gateway's recipient exporters keep gzip.
     compression: ${env:OTELBOX_UPSTREAM_COMPRESSION:-zstd}
+    # Replaces a connection that died without a reset within time + timeout
+    # instead of after the kernel's retransmission timeout; see config/edge.yaml.
+    # The gateway's receiver permits pings this frequent.
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
     timeout: 10s
+    # Queue items are stored as zstd frames, and `queue_size` counts the
+    # compressed bytes an item takes on disk; see config/edge.yaml.
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/gateway
@@ -274,6 +284,15 @@ exporters:
     # above instead. A recipient that fails deterministically then holds its
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
+      enabled: true
+    # The upstream exporters also call a refusal of the route or the recipient
+    # permanent — HTTP 404, 405, 408 and most other 4xx, gRPC NotFound,
+    # FailedPrecondition and Unimplemented — and drop admitted data on it, for
+    # example while an ingress is mid-rollout. Retry those as well. A refusal
+    # of the payload itself (HTTP 400, 409, 413, 422, gRPC InvalidArgument,
+    # AlreadyExists, an oversized message) stays permanent, so one bad item
+    # cannot pin the queue.
+    retry_on_client_error:
       enabled: true
 
 service:

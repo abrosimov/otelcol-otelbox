@@ -58,7 +58,7 @@ extensions:
 
   # Separate extensions let each signal carry its own disk budget; the
   # selected-traces recipient owns only a traces file.
-  # Queue bytes are payload bytes, not exact bbolt allocation, so max_size keeps
+  # Queue bytes are stored zstd bytes, not exact bbolt allocation, so max_size keeps
   # at least 50% headroom for database overhead and compaction.
   file_storage/logs:
     directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/logs
@@ -119,6 +119,20 @@ extensions:
       directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/selected_traces_dedup
       cleanup_on_start: true
 
+  # The WAL of this collector's own metrics, apart from the recipient's metrics
+  # WAL so that a full recipient queue does not refuse the points that report
+  # it. It holds a metrics file only.
+  file_storage/self_metrics:
+    directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/self_metrics
+    create_directory: true
+    fsync: true
+    max_size: ${env:OTELBOX_SELF_STORAGE_MAX_SIZE_BYTES:-805306368}
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: ${env:OTELBOX_STORAGE_DIR:-/dev/null/OTELBOX_STORAGE_DIR-is-required}/compaction/self_metrics
+      cleanup_on_start: true
+
 receivers:
   # The loopback default prevents an omitted bind variable from turning `:port`
   # into a wildcard listener. A public ingress must opt into its bind address.
@@ -133,15 +147,36 @@ receivers:
         # by client connections as well as streams, so ingress rate limiting
         # remains a deployment responsibility.
         max_concurrent_streams: ${env:OTELBOX_INGEST_MAX_CONCURRENT_STREAMS:-16}
+        # Edge and host agent ping every 30s, also with no request in flight,
+        # so that a connection that died without a reset is replaced. The
+        # grpc-go default policy permits one ping in five minutes and answers
+        # more with GOAWAY `too_many_pings`, which would end every such
+        # connection instead.
+        keepalive:
+          enforcement_policy:
+            min_time: 10s
+            permit_without_stream: true
         auth:
           authenticator: bearertokenauth/ingest
       http:
         endpoint: ${env:OTELBOX_BIND_HOST:-127.0.0.1}:14320
         max_request_body_size: 2097152
         read_header_timeout: 10s
-        read_timeout: 30s
-        write_timeout: 30s
-        idle_timeout: 1m
+        # Zero: no limit, deliberately, on both. A body still arriving at
+        # `read_timeout` is answered with HTTP 400, which an OTLP SDK treats as
+        # permanent and drops — a 2 MiB request on a slow link is not a bad
+        # request. A request whose enqueue waits past `write_timeout` on a full
+        # blocking queue is persisted but its 200 is never written, so the
+        # producer sends it again. The handler still ends when the client
+        # disconnects, which cancels a waiting enqueue before it persists.
+        # Without them a slow client holds a goroutine and at most one
+        # 2 MiB body; limiting connections and their rate belongs to the
+        # deployment's front end. `confighttp` defaults `write_timeout` to 30s,
+        # so both are stated rather than omitted.
+        read_timeout: 0s
+        write_timeout: 0s
+        keepalive:
+          idle_timeout: 1m
         auth:
           authenticator: bearertokenauth/ingest
 
@@ -238,6 +273,22 @@ processors:
     ttl: ${env:OTELBOX_SELECTED_TRACES_DEDUP_TTL:-72h}
     max_entries: ${env:OTELBOX_SELECTED_TRACES_DEDUP_MAX_ENTRIES:-500000}
 
+  # The same processor on the ordinary trace recipient's branch, against the
+  # copies fan-out makes. While the selected-traces queue is full, a request
+  # carrying a selected span blocks there and fails at its producer's deadline,
+  # often after this branch already accepted it; each retry would enqueue it
+  # here again, for as long as that recipient is down. Here it is dropped.
+  #
+  # In memory only: the copies come from a retry loop inside one process, and
+  # a restart costs at most one copy of each request then in flight. A span
+  # seen again is refreshed, so `ttl` counts from its last arrival and covers
+  # the gap between two retries many times over; `max_entries` must hold the
+  # spans that arrive in one such gap twice over, about 16 MiB of heap at the
+  # default.
+  span_dedup/traces:
+    ttl: ${env:OTELBOX_TRACES_DEDUP_TTL:-1h}
+    max_entries: ${env:OTELBOX_TRACES_DEDUP_MAX_ENTRIES:-200000}
+
 exporters:
   # These three exporters are one logical all-signal recipient. A deployment
   # renders a uniquely named triplet for every additional recipient.
@@ -245,6 +296,7 @@ exporters:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/logs
@@ -274,11 +326,21 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    # The upstream exporters also call a refusal of the route or the recipient
+    # permanent — HTTP 404, 405, 408 and most other 4xx, gRPC NotFound,
+    # FailedPrecondition and Unimplemented — and drop admitted data on it, for
+    # example while an ingress is mid-rollout. Retry those as well. A refusal
+    # of the payload itself (HTTP 400, 409, 413, 422, gRPC InvalidArgument,
+    # AlreadyExists, an oversized message) stays permanent, so one bad item
+    # cannot pin the queue.
+    retry_on_client_error:
+      enabled: true
 
   otlp_grpc/metrics:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/metrics
@@ -308,11 +370,14 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    retry_on_client_error:
+      enabled: true
 
   otlp_grpc/traces:
     endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/traces
@@ -342,6 +407,8 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    retry_on_client_error:
+      enabled: true
 
   # `otlp_http` is the canonical v0.158 type. The endpoint is an OTLP base URL;
   # the exporter appends `/v1/traces`. Protocol headers and credentials are
@@ -352,6 +419,7 @@ exporters:
       authenticator: headers_setter/selected_traces
     compression: gzip
     timeout: 10s
+    storage_compression: zstd
     sending_queue:
       enabled: true
       storage: file_storage/selected_traces
@@ -378,6 +446,41 @@ exporters:
     # queue until the deployment's queue alert fires.
     retry_on_server_error:
       enabled: true
+    retry_on_client_error:
+      enabled: true
+
+  # This collector's own metrics, to the all-signal recipient on a queue of
+  # their own, so that a full metrics queue does not refuse them. Not blocking:
+  # a held scrape only costs the next one.
+  otlp_grpc/self_metrics:
+    endpoint: ${env:OTELBOX_ALL_SIGNALS_RECIPIENT_ENDPOINT}
+    compression: gzip
+    timeout: 10s
+    storage_compression: zstd
+    sending_queue:
+      enabled: true
+      storage: file_storage/self_metrics
+      num_consumers: 1
+      sizer: bytes
+      queue_size: ${env:OTELBOX_SELF_QUEUE_SIZE_BYTES:-536870912}
+      block_on_overflow: false
+      batch:
+        flush_timeout: 200ms
+        sizer: bytes
+        min_size: 1048576
+        max_size: ${env:OTELBOX_RECIPIENT_MAX_PAYLOAD_BYTES:-3145728}
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0s
+    retry_on_auth_failure:
+      enabled: true
+      interval: ${env:OTELBOX_AUTH_RETRY_INTERVAL:-1h}
+    retry_on_server_error:
+      enabled: true
+    retry_on_client_error:
+      enabled: true
 
 service:
   extensions:
@@ -389,6 +492,7 @@ service:
     - file_storage/traces
     - file_storage/selected_traces
     - file_storage/selected_traces_dedup
+    - file_storage/self_metrics
   telemetry:
     # >>> SHARED — byte-identical in all three role profiles; CI compares hashes.
     # No `output_paths`: a second writer on the same inode interleaves lines and
@@ -413,9 +517,11 @@ service:
                 port: 8889
   pipelines:
     # All traces remain required by every ordinary trace recipient.
+    # Deduplication follows redaction, as on the selected branch, so the index
+    # sees what the queue receives.
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/secrets]
+      processors: [memory_limiter, redaction/secrets, span_dedup/traces]
       exporters: [otlp_grpc/traces]
     # Only explicitly classified traces enter the additional HTTP WAL. A mixed
     # OTLP request is acknowledged only after both required pipeline paths have
@@ -436,4 +542,4 @@ service:
     metrics/self:
       receivers: [prometheus/self]
       processors: [memory_limiter, redaction/secrets]
-      exporters: [otlp_grpc/metrics]
+      exporters: [otlp_grpc/self_metrics]

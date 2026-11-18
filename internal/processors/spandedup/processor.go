@@ -53,6 +53,13 @@ func newSpanDedup(settings processor.Settings, config *Config, next consumer.Tra
 }
 
 func (p *spanDedup) Start(ctx context.Context, host component.Host) error {
+	if p.config.Storage == (component.ID{}) {
+		p.mu.Lock()
+		p.seen = newSeenSet(nil, p.config.TTL, p.config.MaxEntries)
+		p.mu.Unlock()
+		p.settings.Logger.Info("Keeping the span deduplication index in memory only")
+		return nil
+	}
 	extension, ok := host.GetExtensions()[p.config.Storage]
 	if !ok {
 		return fmt.Errorf("storage extension %s is not configured", p.config.Storage)
@@ -96,18 +103,25 @@ func (p *spanDedup) Capabilities() consumer.Capabilities {
 // A span is recorded only after the next consumer accepted it, so a failed
 // attempt is never remembered and its retry passes. Concurrent requests that
 // carry the same span may both pass; that is a duplicate, never a loss.
+//
+// A remembered span that arrives again is refreshed when it has aged into the older half of the index, so
+// a span that is still being re-sent stays remembered for ttl after it was last seen, not after it was
+// first accepted. That is what a producer stuck retrying one request for hours needs.
 func (p *spanDedup) ConsumeTraces(ctx context.Context, traces ptrace.Traces) error {
-	fresh, duplicates := p.removeSeen(traces)
+	fresh, duplicates, refreshed := p.removeSeen(traces)
 	if duplicates > 0 {
 		p.duplicates.Add(ctx, int64(duplicates), p.attributes)
 	}
 	if traces.SpanCount() == 0 {
+		p.persistRefreshed(ctx, refreshed)
 		return nil
 	}
 	if err := p.next.ConsumeTraces(ctx, traces); err != nil {
+		p.persistRefreshed(ctx, refreshed)
 		return err
 	}
 	if len(fresh) == 0 {
+		p.persistRefreshed(ctx, refreshed)
 		return nil
 	}
 
@@ -121,13 +135,28 @@ func (p *spanDedup) ConsumeTraces(ctx context.Context, traces ptrace.Traces) err
 	return nil
 }
 
-func (p *spanDedup) removeSeen(traces ptrace.Traces) ([]spanKey, int) {
+// persistRefreshed writes the refreshed entries. A failure keeps them in memory, where they already
+// work, and the next successful commit writes them, so it fails nothing.
+func (p *spanDedup) persistRefreshed(ctx context.Context, refreshed int) {
+	if refreshed == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.seen.commit(ctx, p.now()); err != nil {
+		p.settings.Logger.Warn("Could not persist refreshed span deduplication entries", zap.Int("spans", refreshed), zap.Error(err))
+	}
+}
+
+func (p *spanDedup) removeSeen(traces ptrace.Traces) ([]spanKey, int, int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	var fresh []spanKey
 	inRequest := make(map[spanKey]struct{})
 	duplicates := 0
+	refreshed := 0
+	now := p.now()
 	traces.ResourceSpans().RemoveIf(func(resourceSpans ptrace.ResourceSpans) bool {
 		resourceSpans.ScopeSpans().RemoveIf(func(scopeSpans ptrace.ScopeSpans) bool {
 			scopeSpans.Spans().RemoveIf(func(span ptrace.Span) bool {
@@ -135,8 +164,16 @@ func (p *spanDedup) removeSeen(traces ptrace.Traces) ([]spanKey, int) {
 				if !ok {
 					return false
 				}
-				if _, repeated := inRequest[key]; repeated || p.seen.contains(key) {
+				if _, repeated := inRequest[key]; repeated {
 					duplicates++
+					return true
+				}
+				if p.seen.contains(key) {
+					duplicates++
+					inRequest[key] = struct{}{}
+					if p.seen.refresh(key, now) {
+						refreshed++
+					}
 					return true
 				}
 				inRequest[key] = struct{}{}
@@ -147,5 +184,5 @@ func (p *spanDedup) removeSeen(traces ptrace.Traces) ([]spanKey, int) {
 		})
 		return resourceSpans.ScopeSpans().Len() == 0
 	})
-	return fresh, duplicates
+	return fresh, duplicates, refreshed
 }

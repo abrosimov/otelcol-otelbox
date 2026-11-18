@@ -117,6 +117,8 @@
 //
 // TestRecipientHTTP500IsRetriedUntilDelivered requires an admitted record that
 // met one HTTP 500 to be sent again and delivered, not dropped as permanent.
+// TestRecipientRouteRefusalIsRetriedUntilDelivered requires the same after one
+// HTTP 404 or 408, which describe the route rather than the payload.
 // TestRecipientPartialSuccessCountsAsDelivered pins what the pinned HTTP
 // exporter does with a partial success: it is logged, counted as sent and not
 // retried. That describes current behaviour, not the desired contract; the

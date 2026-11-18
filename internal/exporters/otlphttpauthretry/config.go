@@ -18,18 +18,35 @@ type ServerErrorRetryConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 }
 
+// ClientErrorRetryConfig opts a recipient's refusals that describe the route
+// or the recipient rather than the payload into the ordinary retry backoff,
+// instead of the upstream permanent classification.
+type ClientErrorRetryConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type Config struct {
 	upstream.Config  `mapstructure:",squash"`
 	AuthRetry        AuthRetryConfig        `mapstructure:"retry_on_auth_failure"`
 	ServerErrorRetry ServerErrorRetryConfig `mapstructure:"retry_on_server_error"`
+	ClientErrorRetry ClientErrorRetryConfig `mapstructure:"retry_on_client_error"`
+	// StorageCompression compresses the items the persistent queue stores. A
+	// sibling of `sending_queue` because that structure is upstream's.
+	StorageCompression StorageCompression `mapstructure:"storage_compression"`
 }
 
 func (config *Config) Validate() error {
 	if err := config.Config.Validate(); err != nil {
 		return err
 	}
+	if err := validateStorageCompression(config.StorageCompression, config.QueueConfig); err != nil {
+		return err
+	}
 	if config.ServerErrorRetry.Enabled && !config.RetryConfig.Enabled {
 		return errors.New(`"retry_on_server_error" requires "retry_on_failure.enabled"`)
+	}
+	if config.ClientErrorRetry.Enabled && !config.RetryConfig.Enabled {
+		return errors.New(`"retry_on_client_error" requires "retry_on_failure.enabled"`)
 	}
 	if !config.AuthRetry.Enabled {
 		return nil

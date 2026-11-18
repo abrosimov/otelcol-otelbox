@@ -138,8 +138,37 @@ func (s *seenSet) record(ctx context.Context, keys []spanKey, now time.Time) err
 		s.index[key] = open.id
 		s.dirty[open.id] = open
 	}
+	return s.commit(ctx, now)
+}
+
+// commit evicts what has expired or exceeds the entry cap and persists every change since the last commit.
+func (s *seenSet) commit(ctx context.Context, now time.Time) error {
 	s.evict(now)
 	return s.persist(ctx)
+}
+
+// refresh moves a remembered key to the open segment when its segment is in the older half of the index,
+// which eviction by age or by size reaches first. Keys in the newer half stay where they are, so a key is
+// copied at most about once per half of the index and the copies stay bounded. It reports whether the key
+// moved; the move is persisted by the next commit.
+func (s *seenSet) refresh(key spanKey, now time.Time) bool {
+	id, ok := s.index[key]
+	if !ok || len(s.segments) == 0 {
+		return false
+	}
+	first := s.segments[0].id
+	if id-first >= uint64(len(s.segments)/2) {
+		return false
+	}
+	open := s.openSegment(now)
+	if open.id == id {
+		return false
+	}
+	open.keys = append(open.keys, key)
+	open.newest = now.UnixNano()
+	s.index[key] = open.id
+	s.dirty[open.id] = open
+	return true
 }
 
 func (s *seenSet) openSegment(now time.Time) *segment {
@@ -175,6 +204,12 @@ func (s *seenSet) evict(now time.Time) {
 }
 
 func (s *seenSet) persist(ctx context.Context) error {
+	if s.client == nil {
+		// An index kept in memory alone has nothing to write.
+		clear(s.dirty)
+		s.deleted = s.deleted[:0]
+		return nil
+	}
 	if len(s.dirty) == 0 && len(s.deleted) == 0 {
 		return nil
 	}

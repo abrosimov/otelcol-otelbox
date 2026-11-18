@@ -67,6 +67,65 @@ func TestGatewayMixedTraceRequestIsOneAcknowledgementUnit(t *testing.T) {
 	}
 }
 
+// TestGatewayRetriedMixedRequestReachesTheOrdinaryRecipientOnce holds the
+// gateway's `span_dedup/traces`. While the selected-traces queue is full, each
+// attempt of a mixed request may be accepted by the all-signal branch before
+// the selected branch blocks it, and a producer retries such a request for as
+// long as that recipient is down. The all-signal recipient must still receive
+// each span once.
+func TestGatewayRetriedMixedRequestReachesTheOrdinaryRecipientOnce(t *testing.T) {
+	scenario := startRecipientScenario(t, "gateway-mixed-retry", map[string]string{
+		"OTELBOX_RECIPIENT_QUEUE_SIZE_BYTES": "2097152",
+	})
+	defer func() { scenario.dumpOnFailure(t, scenario.gateway) }()
+
+	release := make(chan struct{})
+	scenario.backend.setReply(func([]byte) backendReply {
+		return backendReply{status: http.StatusOK, hold: release}
+	})
+
+	shortClient := &http.Client{Timeout: 2 * time.Second}
+	fillSelectedQueue(t, scenario, shortClient)
+
+	classified := "otelbox-ci-retry-llm-" + randomHex(t, 8)
+	unclassified := "otelbox-ci-retry-plain-" + randomHex(t, 8)
+	payload := mixedTracePayload(t, classified, unclassified)
+
+	const attempts = 5
+	for attempt := range attempts {
+		status, body, err := postTraces(shortClient, gatewayHTTPPort, scenario.token, payload)
+		if err == nil && status == http.StatusOK {
+			t.Fatalf("attempt %d was acknowledged while the selected-traces queue was full: %s", attempt, body)
+		}
+	}
+	if err := poll(deliveryTimeout, scenario.gateway, unclassified+" to reach the all-signal sink", func() bool {
+		return sinkContains(t, scenario.sink, unclassified)
+	}); err != nil {
+		t.Fatalf("no attempt reached the all-signal recipient, so the test proves nothing: %v", err)
+	}
+
+	scenario.backend.setReply(nil)
+	close(release)
+	if err := poll(recoveryTimeout, scenario.gateway, "the mixed request to be acknowledged after recovery", func() bool {
+		status, _, err := postTraces(sendClient, gatewayHTTPPort, scenario.token, payload)
+		return err == nil && status == http.StatusOK
+	}); err != nil {
+		t.Fatalf("the gateway never admitted the mixed request after the recipient recovered: %v", err)
+	}
+	if err := poll(deliveryTimeout, scenario.gateway, "the classified span to reach the selected-traces recipient", func() bool {
+		return scenario.backend.contains(classified)
+	}); err != nil {
+		t.Fatalf("the classified span %s never reached the selected-traces recipient: %v", classified, err)
+	}
+
+	for _, marker := range []string{classified, unclassified} {
+		if copies := sinkCount(t, scenario.sink, marker); copies != 1 {
+			t.Fatalf("the all-signal recipient received %d copies of span %s after %d refused attempts and one admitted one; want 1",
+				copies, marker, attempts)
+		}
+	}
+}
+
 // fillSelectedQueue fills the selected-traces queue, whose recipient must be
 // holding every answer, in shrinking steps until an unpadded span no longer
 // fits, so "full" means full for a small request and not merely for a large
