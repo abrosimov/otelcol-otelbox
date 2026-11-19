@@ -11,7 +11,7 @@ dist:
     host-agent roles.
   output_path: ./_build
   # Unquoted: the Go manifest resolver requires one stable semantic version.
-  version: 2.8.0
+  version: 2.9.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.165.0
@@ -23,6 +23,13 @@ receivers:
   # journal itself — so only the host-agent role can wire it, never the
   # `FROM scratch` gateway image, which has no binary to exec.
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/journaldreceiver v0.165.1
+  # Database scrapers, wired by no reference profile. A host-agent deployment
+  # that runs PostgreSQL, Redis or MongoDB renders an instance on its metrics
+  # pipeline instead of running a separate collector beside each database.
+  # Endpoints and credentials are deployment data and stay out of this repository.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver v0.165.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/redisreceiver v0.165.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/mongodbreceiver v0.165.1
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.165.0
