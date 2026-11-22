@@ -19,8 +19,6 @@ name: otelcol-otelbox
 # formula pins checksums that cannot exist before the release they describe.
 
 on:
-  # The two path lists are duplicated because the Actions parser does not
-  # resolve YAML aliases — an anchor would silently match everything.
   push:
     branches: [master]
     # Documentation is absent on purpose: it cannot break a build.
@@ -36,19 +34,9 @@ on:
       - Formula/**
       - renovate.json5
       - .github/workflows/otelcol-otelbox.yml
+  # Every pull request runs, documentation-only ones included: the default
+  # branch requires the check required, which a skipped workflow never reports.
   pull_request:
-    paths:
-      - builder.yaml
-      - tools/ci/**
-      - Dockerfile
-      - .dockerignore
-      - config/**
-      - internal/exporters/**
-      - internal/processors/**
-      - test/**
-      - Formula/**
-      - renovate.json5
-      - .github/workflows/otelcol-otelbox.yml
   workflow_dispatch: {}
 
 # Denied at the top, granted per job: a workflow-level grant would hand every
@@ -686,6 +674,20 @@ jobs:
           --pull
           --image "$IMAGE@$DIGEST"
           --config ../../test/config/image-smoke.yaml
+
+  # The one check the default branch requires: it fails when any job a release
+  # depends on fails or is cancelled. Publishing stays outside it, so a pull
+  # request is never held on a job that runs only on the default branch.
+  required:
+    name: required
+    if: always()
+    needs: [resolve, static-check, config-bundle, build, validate-config, integration-test, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: All jobs passed
+        run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
 
   release:
     name: Publish release
