@@ -3,7 +3,7 @@ module github.com/abrosimov/otelcol-otelbox/exporter/otlphttpauthretry
 go 1.27.0
 
 require (
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/collector/component v1.71.0
 	go.opentelemetry.io/collector/component/componenttest v0.165.0
