@@ -40,7 +40,7 @@ module that drives the built binary from outside.
 | `internal/exporters/` | OTLP exporter auth-retry adaptations and unit tests. `UPSTREAM_VERSION` states the Collector release each wrapper adapts. |
 | `internal/processors/spandedup/` | The `span_dedup` processor and unit tests: drops a span the next consumer already accepted, with its index in a storage extension or in memory alone. Its `go.mod` joins the dependency set `manifest resolve` checks. |
 | `config/{edge,gateway,host-agent}.yaml` | Three complete, independently loaded role profiles. |
-| `docs/` | The documentation vault, laid out under the kadmos template and selected by the root `.vault-root`. `docs/PROJECT_AGENTS.md` states its placement rules. `reference/` holds the role, redaction and adoption notes, edited in place with the profiles; `reference/redaction.md` is the canonical redaction carrier and threat boundary. `roadmaps/` holds the roadmap and deferred tasks. |
+| `docs/` | The documentation vault, laid out under the kadmos template and selected by the root `.vault-root`. `docs/PROJECT_AGENTS.md` states its placement rules. `reference/` holds the role, redaction and adoption notes and the edge self-telemetry contract that desktop consumers read, edited in place with the profiles; `reference/redaction.md` is the canonical redaction carrier and threat boundary. `roadmaps/` holds the roadmap and deferred tasks. |
 | `tools/ci/` | Tested Go checks for manifest resolution, shared regions, built-binary contents and OCI runtime readiness. |
 | `test/harness/` | Delivery, routing, authentication, crash durability and recipient-coupling tests. |
 | `test/config/` | CI-only overlays and backend doubles. Merge semantics remain load-bearing here. |

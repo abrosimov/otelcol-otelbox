@@ -16,7 +16,7 @@ revision, never by local edit.
 
 | Directory | Holds | Body mutation |
 | --- | --- | --- |
-| `reference/` | `reference` notes: the role guides, the redaction boundary and the adoption guide. They describe the current profiles and change in the same commit as the profile they describe. | `mutable` |
+| `reference/` | `reference` notes: the role guides, the redaction boundary, the adoption guide and the edge self-telemetry contract. They describe the current profiles and change in the same commit as the profile they describe. | `mutable` |
 | `roadmaps/` | `roadmap-item` notes: the roadmap and, under `tasks/`, deferred design tasks. | `immutable` |
 | `research/` | `agent-artifact` research notes from `templates/ai_research_template.md`; `problem-cards/` holds FPF C.22.2 ProblemCards in their thin form. | `immutable` |
 

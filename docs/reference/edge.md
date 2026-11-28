@@ -434,6 +434,9 @@ through its own `metrics/self` pipeline:
 | Volume space | `system.filesystem.utilization` from `host_metrics/storage`, selected by the `mountpoint` that holds `OTELBOX_STORAGE_DIR` | above 0.8 |
 | Silence | absence of any point from this edge | longer than a few collection intervals |
 
+The series, labels and units consumers may rely on are fixed in
+[edge-status-metrics.md](edge-status-metrics.md) and held by the harness.
+
 These points travel on `metrics/self`, which has its own exporter
 `otlp_grpc/gateway_self` and WAL `file_storage/gateway_self`. A full main queue
 therefore refuses application data without also refusing the signals that
