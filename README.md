@@ -122,6 +122,7 @@ forbidden in a rendered deployment.
 Required string and path variables are documented in the role guides:
 
 - [Edge](docs/reference/edge.md)
+- [Edge self-telemetry contract](docs/reference/edge-status-metrics.md)
 - [Gateway](docs/reference/gateway.md)
 - [Host agent](docs/reference/host-agent.md)
 - [Credential redaction boundary](docs/reference/redaction.md)

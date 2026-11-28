@@ -79,7 +79,9 @@ service:
       # reach it. A list, so it replaces the profile's entry outright and with
       # it the OTELBOX_BIND_HOST reference. `level: detailed` is a map key and
       # survives, which is what keeps `error_type` on the series that assertion
-      # reads.
+      # reads. Because the list is replaced, the harness never loads the
+      # profile's Prometheus reader block: any change to it beyond host and
+      # port (see docs/reference/edge-status-metrics.md) must be mirrored here.
       readers:
         - pull:
             exporter:
